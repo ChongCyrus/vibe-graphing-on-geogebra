@@ -5,10 +5,9 @@
     android:orientation="vertical"
     android:background="#ffffff">
 
-    <!-- Fixed row: undo/redo (must always stay visible) plus GeoGebra
-         search and menu buttons. The GeoGebra counterparts inside the
-         WebView are moved off-screen by CSS so the drawing toolbar can
-         use its own full row. -->
+    <!-- Fixed row: GeoGebra search and menu buttons. Undo/redo keep their
+         original GeoGebra arrow-icon look and are pinned by ggb.html above
+         the bottom-right zoom panel (home button). -->
     <LinearLayout
         android:id="@+id/fixed_bar"
         android:layout_width="match_parent"

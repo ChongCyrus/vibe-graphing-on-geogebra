@@ -23,23 +23,30 @@
      * Android phone layout fix.
      *
      * GeoGebra's mobile toolbar puts undo/redo/search/menu (rightButtonPanel)
-     * and the drawing toolbar (toolBPanel) into the same 53px row, and the
-     * toolbar width is computed as if the right buttons still took space.
-     * The Android app supplies native undo/redo/search/menu buttons in its own
-     * top bar, so we move the GeoGebra ones off-screen and let the drawing
-     * toolbar use the full row width. The 53px panel height and the menu
-     * dropdown position (top:53px) are left untouched.
+     * and the drawing toolbar (toolBPanel) into the same 53px row. We remove
+     * rightButtonPanel from the flow and pin it above the bottom-right zoom
+     * panel, keeping only the original undo/redo arrow icons visible. The
+     * drawing toolbar then gets the whole 53px row. The search/menu buttons
+     * remain in the DOM (hidden) and are triggered from the native Android
+     * top bar, so no functionality is lost.
      */
     .GeoGebraFrame .toolbarPanel .rightButtonPanel,
     .GeoGebraFrame .toolbarPanel .rightButtonPanelMobile {
-        position: absolute !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        right: auto !important;
-        width: 1px !important;
-        height: 1px !important;
-        overflow: hidden !important;
+        position: fixed !important;
+        top: auto !important;
+        left: auto !important;
+        right: 16px !important;
+        bottom: 220px; /* fallback; JS aligns it above the zoom panel */
+        width: auto !important;
+        height: auto !important;
+        overflow: visible !important;
         margin: 0 !important;
+        z-index: 80;
+    }
+
+    /* Keep only the original undo/redo arrow buttons visible. */
+    .GeoGebraFrame .toolbarPanel .rightButtonPanel > *:nth-child(n+3) {
+        display: none !important;
     }
 
     .GeoGebraFrame .toolbarPanel .toolBPanel,
@@ -157,6 +164,40 @@
     } catch (e) {
         notifyError(e.message);
     }
+
+    // ---------- position original undo/redo above the bottom-right zoom panel ----------
+    function positionUndoRedoDock() {
+        var rbp = document.querySelector(".rightButtonPanel");
+        var zp = document.querySelector(".zoomPanel");
+        if (!rbp || !zp) return;
+        var rect = zp.getBoundingClientRect();
+        var bottom = Math.max(8, window.innerHeight - rect.top + 8);
+        rbp.style.bottom = bottom + "px";
+        rbp.style.right = "16px";
+    }
+
+    function installUndoRedoDockPositioning() {
+        var timer = null;
+
+        function schedule() {
+            if (timer) return;
+            timer = setTimeout(function () {
+                timer = null;
+                positionUndoRedoDock();
+            }, 100);
+        }
+
+        positionUndoRedoDock();
+        window.addEventListener("resize", schedule);
+        if (window.MutationObserver) {
+            var mo = new MutationObserver(schedule);
+            mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+        } else {
+            setInterval(positionUndoRedoDock, 1000);
+        }
+    }
+
+    installUndoRedoDockPositioning();
 
     // ---------- helpers for Android ----------
     function b64ToUtf8(b64) {

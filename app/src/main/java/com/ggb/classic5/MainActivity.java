@@ -235,11 +235,13 @@ public class MainActivity extends Activity {
     }
 
     private void buildToolbar() {
+        // Undo/redo are the original GeoGebra arrow icons, repositioned by
+        // ggb.html above the bottom-right zoom panel (home button). The
+        // native top bar only keeps menu/search, which are triggered through
+        // the hidden GeoGebra buttons.
         LinearLayout fixedBar = findViewById(R.id.fixed_bar);
-        String[] fixedLabels = {"撤销", "重做", "菜单", "搜索"};
+        String[] fixedLabels = {"菜单", "搜索"};
         Runnable[] fixedActions = {
-                this::undo,
-                this::redo,
                 this::openGgbMenu,
                 this::openGgbSearch
         };
@@ -278,16 +280,6 @@ public class MainActivity extends Activity {
             btn.setOnClickListener(v -> action.run());
             container.addView(btn);
         }
-    }
-
-    private void undo() {
-        evalJsBool("(window.__ggbUndo ? window.__ggbUndo() : false)",
-                "GeoGebra 尚未就绪，无法撤销");
-    }
-
-    private void redo() {
-        evalJsBool("(window.__ggbRedo ? window.__ggbRedo() : false)",
-                "GeoGebra 尚未就绪，无法重做");
     }
 
     private void openGgbMenu() {
