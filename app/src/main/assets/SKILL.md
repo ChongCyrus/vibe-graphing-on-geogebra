@@ -41,7 +41,7 @@ Android 侧通过 `webView.evaluateJavascript(...)` 调用 `window.__ggb*` 函�
 | `window.__ggbRunJsScript(script)` | JavaScript 代码 | 字符串 | 在页面上下文执行 JS 并返回结果 |
 | `window.__ggbGetSnapshot()` | 无 | JSON 字符串 | 当前作图快照：对象数量/名称/类型/当前模式 |
 | `window.__ggbListObjects()` | 无 | JSON 字符串 | 对象数组 `[{name,type}]`（用于对象管理/多选） |
-| `window.__ggbClearAll()` | 无 | boolean | 删除所有对象（保留坐标轴/网格/视图设置，可撤销） |
+| `window.__ggbClearAll()` | 无 | boolean | 删除所有对象（保留坐标轴/网格/视图设置） |
 | `window.__ggbSetMode(mode)` | 模式编号 | boolean | 切换工具模式（如 77=框选） |
 | `window.__ggbDeleteSelected()` | 无 | boolean | 删除当前绘图区中所有被选中对象（点选/框选） |
 | `window.__ggbGetTikz(cbId, settingsJson)` | callback id + TikZ 设置 JSON | 回调 | 当前绘图转 TikZ 代码块 |
