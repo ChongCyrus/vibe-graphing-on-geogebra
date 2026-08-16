@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.content.res.AssetManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -128,6 +129,7 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         prefs = getSharedPreferences("ggb_classic5", MODE_PRIVATE);
+        loadChatSessions();
 
         statusView = findViewById(R.id.status);
         webView = findViewById(R.id.webview);
@@ -839,6 +841,7 @@ public class MainActivity extends Activity {
     private static class ChatMessage {
         String role;   // user | assistant | thinking | system | tool
         String text;
+        boolean hidden;
 
         ChatMessage(String role, String text) {
             this.role = role;
@@ -850,12 +853,15 @@ public class MainActivity extends Activity {
             try {
                 o.put("role", role);
                 o.put("text", text);
+                o.put("hidden", hidden);
             } catch (Exception ignored) {}
             return o;
         }
 
         static ChatMessage fromJson(JSONObject o) {
-            return new ChatMessage(o.optString("role", "user"), o.optString("text", ""));
+            ChatMessage m = new ChatMessage(o.optString("role", "user"), o.optString("text", ""));
+            m.hidden = o.optBoolean("hidden", false);
+            return m;
         }
     }
 
@@ -915,7 +921,7 @@ public class MainActivity extends Activity {
         private List<ChatMessage> visible() {
             ArrayList<ChatMessage> out = new ArrayList<>();
             for (ChatMessage m : session.messages) {
-                if (!showThinking && "thinking".equals(m.role)) continue;
+                if ("thinking".equals(m.role) && (!showThinking || m.hidden)) continue;
                 out.add(m);
             }
             return out;
@@ -1023,39 +1029,30 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
 
     private void showLlmChatDialog() {
-        loadChatSessions();
         if (chatSessions.isEmpty()) {
             ChatSession s = new ChatSession(UUID.randomUUID().toString(), "新会话");
             chatSessions.add(s);
         }
-        currentChatSession = chatSessions.get(0);
-        chatStopped.set(false);
-        chatRunning.set(false);
+        if (currentChatSession == null || !chatSessions.contains(currentChatSession)) {
+            currentChatSession = chatSessions.get(0);
+        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(8, 8, 8, 8);
+        root.setPadding(10, 10, 10, 10);
+        root.setBackgroundColor(Color.rgb(248, 248, 248));
 
         // top bar
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setPadding(0, 4, 0, 4);
 
-        Button sessionsBtn = new Button(this);
-        sessionsBtn.setText("会话");
-        sessionsBtn.setAllCaps(false);
-        Button newBtn = new Button(this);
-        newBtn.setText("新会话");
-        newBtn.setAllCaps(false);
-        final Button stopBtn = new Button(this);
-        stopBtn.setText("停止");
-        stopBtn.setAllCaps(false);
-        Button settingsBtn = new Button(this);
-        settingsBtn.setText("设置");
-        settingsBtn.setAllCaps(false);
-        Button closeBtn = new Button(this);
-        closeBtn.setText("关闭");
-        closeBtn.setAllCaps(false);
+        Button sessionsBtn = styleTopButton("会话");
+        Button newBtn = styleTopButton("新会话");
+        final Button stopBtn = styleTopButton("停止");
+        Button settingsBtn = styleTopButton("设置");
+        Button closeBtn = styleTopButton("✕");
+        closeBtn.setTextSize(18);
 
         top.addView(sessionsBtn);
         top.addView(newBtn);
@@ -1069,8 +1066,9 @@ public class MainActivity extends Activity {
         chatThinkingHeaderView = thinkingHeader;
         thinkingHeader.setText("思考链：显示（点击隐藏）");
         thinkingHeader.setTextColor(Color.rgb(120, 90, 0));
-        thinkingHeader.setPadding(8, 6, 8, 6);
-        thinkingHeader.setBackgroundColor(Color.rgb(255, 249, 225));
+        thinkingHeader.setPadding(16, 10, 16, 10);
+        thinkingHeader.setGravity(Gravity.CENTER_VERTICAL);
+        thinkingHeader.setBackground(roundedBg(Color.rgb(255, 243, 205), 24));
         thinkingHeader.setOnClickListener(v -> {
             boolean show = !chatAdapter.showThinking;
             chatAdapter.setShowThinking(show);
@@ -1081,40 +1079,57 @@ public class MainActivity extends Activity {
         // session title
         chatSessionTitleView = new TextView(this);
         chatSessionTitleView.setText(currentChatSession.title);
-        chatSessionTitleView.setTextSize(16);
-        chatSessionTitleView.setPadding(8, 8, 8, 8);
-        chatSessionTitleView.setTextColor(Color.rgb(30, 30, 30));
+        chatSessionTitleView.setTextSize(17);
+        chatSessionTitleView.setTypeface(Typeface.DEFAULT_BOLD);
+        chatSessionTitleView.setPadding(10, 10, 10, 6);
+        chatSessionTitleView.setTextColor(Color.rgb(25, 25, 25));
         root.addView(chatSessionTitleView);
 
         // message list
         chatListView = new ListView(this);
         chatAdapter = new ChatAdapter(currentChatSession);
         chatListView.setAdapter(chatAdapter);
+        chatListView.setOnItemClickListener((parent, view, position, id) -> {
+            Object item = chatAdapter.getItem(position);
+            if (!(item instanceof ChatMessage)) return;
+            ChatMessage m = (ChatMessage) item;
+            if ("system".equals(m.role) && m.text.startsWith("第 ") && m.text.contains("轮")) {
+                toggleThinkingForRound(m);
+            }
+        });
         root.addView(chatListView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         // input row
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
-        inputRow.setPadding(0, 6, 0, 0);
+        inputRow.setPadding(0, 10, 0, 4);
         final EditText input = new EditText(this);
         input.setHint("用自然语言描述你要画的图或要执行的操作…");
         input.setSingleLine(true);
+        input.setTextSize(14);
+        input.setPadding(18, 10, 18, 10);
+        input.setBackground(roundedBg(Color.rgb(255, 255, 255), 24));
+        inputRow.addView(input, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
         Button sendBtn = new Button(this);
         sendBtn.setText("发送");
         sendBtn.setAllCaps(false);
-        inputRow.addView(input, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        inputRow.addView(sendBtn);
+        sendBtn.setTextColor(Color.WHITE);
+        sendBtn.setTextSize(14);
+        sendBtn.setPadding(20, 10, 20, 10);
+        sendBtn.setBackground(roundedBg(Color.rgb(101, 87, 210), 24));
+        LinearLayout.LayoutParams sendLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sendLp.setMargins(10, 0, 0, 0);
+        inputRow.addView(sendBtn, sendLp);
         root.addView(inputRow);
 
         sessionsBtn.setOnClickListener(v -> showSessionListDialog());
         newBtn.setOnClickListener(v -> createNewChatSession());
         settingsBtn.setOnClickListener(v -> showLlmSettingsDialog());
         closeBtn.setOnClickListener(v -> {
-            chatStopped.set(true);
-            chatRunId++;
-            chatRunning.set(false);
             if (chatDialog != null) chatDialog.dismiss();
         });
         stopBtn.setOnClickListener(v -> {
@@ -1147,9 +1162,9 @@ public class MainActivity extends Activity {
         chatDialog.setContentView(root);
         chatDialog.setCancelable(true);
         chatDialog.setOnDismissListener(d -> {
-            chatStopped.set(true);
-            chatRunId++;
-            chatRunning.set(false);
+            // Keep the agent running in the background so the user can reopen
+            // the chat later and inspect progress. Only the "停止" button or
+            // switching/deleting a session stops the run.
         });
         chatDialog.getWindow().setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -1282,6 +1297,50 @@ public class MainActivity extends Activity {
         chatThinkingHeaderView.setText(show ? "思考链：显示（点击隐藏）" : "思考链：隐藏（点击显示）");
     }
 
+    private void toggleThinkingForRound(ChatMessage roundMarker) {
+        if (currentChatSession == null) return;
+        int idx = currentChatSession.messages.indexOf(roundMarker);
+        if (idx < 0) return;
+        // Toggle the thinking message(s) immediately following this round marker.
+        boolean toggled = false;
+        for (int i = idx + 1; i < currentChatSession.messages.size(); i++) {
+            ChatMessage m = currentChatSession.messages.get(i);
+            if ("thinking".equals(m.role)) {
+                m.hidden = !m.hidden;
+                toggled = true;
+            } else if (!"assistant".equals(m.role)) {
+                break;
+            }
+        }
+        if (toggled) {
+            if (chatAdapter != null) chatAdapter.notifyDataSetChanged();
+            saveChatSessions();
+        }
+    }
+
+    private GradientDrawable roundedBg(int color, float radius) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setColor(color);
+        d.setCornerRadius(radius);
+        return d;
+    }
+
+    private Button styleTopButton(String text) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(12);
+        b.setTextColor(Color.rgb(50, 50, 50));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setPadding(12, 6, 12, 6);
+        b.setBackground(roundedBg(Color.rgb(235, 235, 240), 18));
+        return b;
+    }
+
     private void showLlmSettingsDialog() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout panel = new LinearLayout(this);
@@ -1385,6 +1444,11 @@ public class MainActivity extends Activity {
         void onFinished(String fullReasoning, String fullContent);
     }
 
+    private String jsonString(JSONObject o, String key) {
+        if (o == null || o.isNull(key)) return "";
+        return o.optString(key, "");
+    }
+
     private JSONObject callLlmInternal(List<JSONObject> messages, boolean stream,
             AtomicBoolean stopped, LlmStreamCallback callback) throws Exception {
         String apiUrl = prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions");
@@ -1458,8 +1522,8 @@ public class MainActivity extends Activity {
                 if (choices == null || choices.length() == 0) continue;
                 JSONObject delta = choices.getJSONObject(0).optJSONObject("delta");
                 if (delta == null) continue;
-                String rc = delta.optString("reasoning_content", "");
-                String cc = delta.optString("content", "");
+                String rc = jsonString(delta, "reasoning_content");
+                String cc = jsonString(delta, "content");
                 if (rc != null && !rc.isEmpty()) fullReasoning.append(rc);
                 if (cc != null && !cc.isEmpty()) fullContent.append(cc);
                 if (callback != null && (!rc.isEmpty() || !cc.isEmpty())) {
@@ -1582,9 +1646,9 @@ public class MainActivity extends Activity {
             JSONArray choices = resp.optJSONArray("choices");
             if (choices == null || choices.length() == 0) return;
             JSONObject msg = choices.getJSONObject(0).getJSONObject("message");
-            String title = msg.optString("content", "").trim();
+            String title = jsonString(msg, "content").trim();
             if (title.isEmpty()) {
-                title = msg.optString("reasoning_content", "").trim();
+                title = jsonString(msg, "reasoning_content").trim();
             }
             if (title.isEmpty()) return;
             title = title.replaceAll("[\"“”'']", "").trim();
@@ -1631,7 +1695,7 @@ public class MainActivity extends Activity {
             while (rounds < 20 && runId == chatRunId && !chatStopped.get() && !stopped.get()) {
                 List<JSONObject> chat = buildLlmContext(session, skill);
 
-                appendMessageTo(session, "system", "第 " + (rounds + 1) + " 轮：正在请求模型…");
+                appendMessageTo(session, "system", "第 " + (rounds + 1) + " 轮：正在请求模型…（点击切换本轮思考链）");
 
                 // placeholders for this round
                 currentThinkingMessage = new ChatMessage("thinking", "");
