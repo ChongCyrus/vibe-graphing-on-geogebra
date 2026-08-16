@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GeoGebra Classic 5</string>
+    <string name="status_loading">正在加载 GeoGebra Classic 5（离线）…</string>
+</resources>

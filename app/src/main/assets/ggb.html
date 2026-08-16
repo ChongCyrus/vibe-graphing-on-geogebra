@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>GeoGebra Classic 5</title>
+<style>
+    html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #ffffff;
+    }
+    #ggbApplet {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+</style>
+</head>
+<body>
+<div id="ggbApplet"></div>
+<script src="deployggb.js"></script>
+<script src="svg2tikz.js"></script>
+<script>
+(function () {
+    "use strict";
+
+    var appletId = "ggbApplet";
+    var api = null;
+
+    // ---------- query string helpers ----------
+    var qs = {};
+    (function () {
+        var query = location.search || "";
+        query.replace(/[?&]([^=&]+)=([^&]*)/g, function (_, k, v) {
+            qs[decodeURIComponent(k)] = decodeURIComponent(v);
+            return _;
+        });
+    })();
+
+    function qBool(name, def) {
+        var v = qs[name];
+        if (v === undefined || v === "") return def;
+        return v === "true" || v === "1" || v === "yes";
+    }
+
+    function qNum(name, def) {
+        var n = parseFloat(qs[name]);
+        return isNaN(n) ? def : n;
+    }
+
+    function qStr(name, def) {
+        var v = qs[name];
+        return (v === undefined || v === "") ? def : v;
+    }
+
+    function notifyReady() {
+        try { AndroidBridge.onAppletReady(); } catch (e) { /* bridge not ready yet */ }
+    }
+
+    function notifyError(msg) {
+        try { AndroidBridge.onAppletError(msg || "unknown error"); } catch (e) { /* ignore */ }
+    }
+
+    function ggbOnLoad(loadedApi) {
+        api = loadedApi;
+        window.ggbApi = api;
+        notifyReady();
+    }
+    window.ggbOnLoad = ggbOnLoad;
+
+    // ---------- GeoGebra Classic 5 applet parameters ----------
+    var params = {
+        id: appletId,
+        showMenuBar: qBool("showMenuBar", true),
+        showToolBar: qBool("showToolBar", true),
+        showAlgebraInput: qBool("showAlgebraInput", true),
+        showToolBarHelp: qBool("showToolBarHelp", false),
+        showResetIcon: qBool("showResetIcon", false),
+        enableLabelDrags: qBool("enableLabelDrags", true),
+        enableShiftDragZoom: qBool("enableShiftDragZoom", true),
+        enableRightClick: qBool("enableRightClick", true),
+        showZoomButtons: qBool("showZoomButtons", true),
+        showFullscreenButton: qBool("showFullscreenButton", false),
+        scale: qNum("scale", 1),
+        disableAutoScale: qBool("disableAutoScale", false),
+        clickToLoad: qBool("clickToLoad", false),
+        language: qStr("language", "zh-CN"),
+        prerelease: false,
+        appName: "classic",
+        allowUpscale: true,
+        appletOnLoad: ggbOnLoad
+    };
+
+    // width/height: if provided use them, otherwise let deployggb size to the container.
+    if (qs.width !== undefined && qs.width !== "") {
+        params.width = Math.max(1, parseInt(qs.width, 10) || 0);
+    }
+    if (qs.height !== undefined && qs.height !== "") {
+        params.height = Math.max(1, parseInt(qs.height, 10) || 0);
+    }
+
+    // Classic 5 views: algebra + graphics.
+    var views = {
+        is3D: 0,
+        AV: 1,
+        SV: 0,
+        CV: 0,
+        EV2: 0,
+        CP: 0,
+        PC: 0,
+        DA: 0,
+        FI: 0,
+        macro: 0
+    };
+
+    var codebase = location.href.split("?")[0];
+    codebase = codebase.slice(0, codebase.lastIndexOf("/") + 1) + "web3d/";
+
+    try {
+        var applet = new GGBApplet(params, "5.0", views);
+        applet.setHTML5Codebase(codebase);
+        applet.inject(appletId);
+    } catch (e) {
+        notifyError(e.message);
+    }
+
+    // ---------- helpers for Android ----------
+    function b64ToUtf8(b64) {
+        if (!b64) return "";
+        if (b64.indexOf("data:") === 0 && b64.indexOf(",") >= 0) {
+            b64 = b64.slice(b64.indexOf(",") + 1);
+        }
+        var binary = atob(b64);
+        if (typeof TextDecoder === "undefined") {
+            return decodeURIComponent(escape(binary));
+        }
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return new TextDecoder("utf-8").decode(bytes);
+    }
+
+    function ok(cbId, payload) {
+        try { AndroidBridge.onResult(cbId, true, payload, null); } catch (e) { /* ignore */ }
+    }
+
+    function fail(cbId, message) {
+        try { AndroidBridge.onResult(cbId, false, null, message || "unknown error"); } catch (e) { /* ignore */ }
+    }
+
+    function requireApi(cbId) {
+        if (!api) {
+            fail(cbId, "GeoGebra applet is not ready yet");
+            return false;
+        }
+        return true;
+    }
+
+    window.__ggbIsReady = function () {
+        return !!api;
+    };
+
+    window.__ggbGetSvg = function (cbId) {
+        if (!requireApi(cbId)) return;
+        try {
+            api.getSVGBase64(function (b64) {
+                ok(cbId, b64 || "");
+            });
+        } catch (e) {
+            fail(cbId, e.message);
+        }
+    };
+
+    window.__ggbGetPng = function (cbId) {
+        if (!requireApi(cbId)) return;
+        try {
+            api.getScreenshotBase64(function (b64) {
+                ok(cbId, b64 || "");
+            });
+        } catch (e) {
+            fail(cbId, e.message);
+        }
+    };
+
+    window.__ggbGetGgb = function (cbId) {
+        if (!requireApi(cbId)) return;
+        try {
+            api.getBase64(function (b64) {
+                ok(cbId, b64 || "");
+            });
+        } catch (e) {
+            fail(cbId, e.message);
+        }
+    };
+
+    var ggbIncoming = {};
+
+    window.__ggbSetGgbBegin = function (cbId) {
+        ggbIncoming[cbId] = "";
+    };
+
+    window.__ggbSetGgbChunk = function (cbId, chunk) {
+        if (typeof ggbIncoming[cbId] === "string") {
+            ggbIncoming[cbId] += chunk;
+        }
+    };
+
+    window.__ggbSetGgbEnd = function (cbId) {
+        var b64 = ggbIncoming[cbId] || "";
+        delete ggbIncoming[cbId];
+        if (!requireApi(cbId)) return;
+        try {
+            api.setBase64(b64, function () {
+                ok(cbId, null);
+            });
+        } catch (e) {
+            fail(cbId, e.message);
+        }
+    };
+
+    window.__ggbReset = function () {
+        if (!api) return false;
+        try {
+            api.reset();
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.__ggbEvalCommand = function (cmd) {
+        if (!api) return false;
+        try {
+            return api.evalCommand(cmd);
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.__ggbGetTikz = function (cbId, settingsJson) {
+        if (!requireApi(cbId)) return;
+        try {
+            var settings = JSON.parse(settingsJson);
+            var mode = settings.outputMode || "codeblock";
+
+            function figSettings() {
+                var s = {};
+                for (var k in settings) {
+                    if (settings.hasOwnProperty(k)) s[k] = settings[k];
+                }
+                s.outputMode = "figonly";
+                return s;
+            }
+
+            api.getSVGBase64(function (b64) {
+                try {
+                    var svgText = b64ToUtf8(b64);
+                    if (!svgText || svgText.indexOf("<svg") === -1) {
+                        fail(cbId, "GeoGebra returned no SVG content. Draw something first.");
+                        return;
+                    }
+                    var doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
+                    var svg = doc.querySelector("svg");
+                    if (!svg) {
+                        fail(cbId, "Could not parse the SVG exported by GeoGebra.");
+                        return;
+                    }
+
+                    var out;
+                    if (mode === "codeblock") {
+                        var c = new SvgToTikzConverter(figSettings()).convert(svg);
+                        out = "~~~tikz\n\\begin{document}\n" + c + "\n\\end{document}\n\n~~~\n";
+                    } else if (mode === "standalone") {
+                        var st = figSettings();
+                        st.outputMode = "standalone";
+                        out = new SvgToTikzConverter(st).convert(svg);
+                    } else if (mode === "figonly") {
+                        out = new SvgToTikzConverter(figSettings()).convert(svg);
+                    } else {
+                        var co = figSettings();
+                        co.outputMode = "codeonly";
+                        out = new SvgToTikzConverter(co).convert(svg);
+                    }
+                    ok(cbId, out);
+                } catch (e2) {
+                    fail(cbId, e2.message);
+                }
+            });
+        } catch (e) {
+            fail(cbId, e.message);
+        }
+    };
+})();
+</script>
+</body>
+</html>
