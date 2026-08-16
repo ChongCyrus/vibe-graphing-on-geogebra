@@ -1171,11 +1171,37 @@ public class MainActivity extends Activity {
                 JSONObject resp = callLlm(chat);
 
                 JSONObject choice = resp.getJSONArray("choices").getJSONObject(0);
-                String content = choice.getJSONObject("message").getString("content");
+                JSONObject message = choice.getJSONObject("message");
+                String content = message.optString("content", "");
+                String reasoning = message.optString("reasoning_content", "");
+                String finishReason = choice.optString("finish_reason", "stop");
+
+                if (content.trim().isEmpty() && !reasoning.trim().isEmpty()) {
+                    if ("length".equals(finishReason)) {
+                        chat.add(new JSONObject().put("role", "user").put("content",
+                                "[系统提示] 你的输出被截断了，请直接输出 JSON 对象（不要输出思考过程）。"));
+                        rounds++;
+                        continue;
+                    }
+                    // Fallback for models that only put the answer in reasoning_content.
+                    content = reasoning;
+                }
+
+                if (content.trim().isEmpty()) {
+                    chat.add(new JSONObject().put("role", "user").put("content",
+                            "[系统提示] 你没有输出任何内容，请直接输出 JSON 对象。"));
+                    rounds++;
+                    continue;
+                }
+
                 chat.add(new JSONObject().put("role", "assistant").put("content", content));
 
                 if (showThinking.isChecked()) {
-                    appendLlmText(messages, adapter, listView, "[思考链 " + (rounds + 1) + "]\n" + content);
+                    String chain = content;
+                    if (!reasoning.trim().isEmpty()) {
+                        chain = "[推理] " + reasoning + "\n[回答] " + content;
+                    }
+                    appendLlmText(messages, adapter, listView, "[思考链 " + (rounds + 1) + "]\n" + chain);
                 }
 
                 JSONObject action = parseLlmAction(content);
