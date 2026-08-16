@@ -713,6 +713,69 @@
         return executed > 0;
     };
 
+    // Execute GGB commands and return a JSON log line-by-line.
+    window.__ggbRunGgbScriptWithLog = function (script) {
+        if (!api || typeof api.evalCommand !== "function") {
+            return JSON.stringify({ ok: false, error: "GeoGebra API is not ready", lines: [] });
+        }
+        var lines = String(script || "").split(/\r?\n/);
+        var out = [];
+        var executed = 0;
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            try {
+                api.evalCommand(line);
+                executed++;
+                out.push({ line: line, ok: true, error: "" });
+            } catch (e) {
+                out.push({ line: line, ok: false, error: e.message || String(e) });
+            }
+        }
+        return JSON.stringify({ ok: executed > 0, executed: executed, lines: out });
+    };
+
+    // Execute arbitrary JavaScript inside the GeoGebra page context.
+    window.__ggbRunJsScript = function (script) {
+        try {
+            var result = eval(String(script || ""));
+            try {
+                return JSON.stringify(result);
+            } catch (jsonErr) {
+                return String(result);
+            }
+        } catch (e) {
+            return "ERROR: " + (e.message || String(e));
+        }
+    };
+
+    // Snapshot of the current construction for the LLM feedback loop.
+    window.__ggbGetSnapshot = function () {
+        var snap = { objectNumber: 0, objects: [], mode: -1, error: "" };
+        if (!api) {
+            snap.error = "GeoGebra API is not ready";
+            return JSON.stringify(snap);
+        }
+        try { snap.mode = (typeof api.getMode === "function") ? api.getMode() : -1; } catch (e) {}
+        try {
+            if (typeof api.getObjectNumber === "function") {
+                snap.objectNumber = api.getObjectNumber();
+            }
+            if (typeof api.getAllObjectNames === "function") {
+                var names = api.getAllObjectNames();
+                for (var i = 0; i < names.length && i < 200; i++) {
+                    var name = names[i];
+                    var type = "";
+                    try { type = (typeof api.getObjectType === "function") ? api.getObjectType(name) : ""; } catch (e2) {}
+                    snap.objects.push({ name: name, type: type });
+                }
+            }
+        } catch (e) {
+            snap.error = e.message || String(e);
+        }
+        return JSON.stringify(snap);
+    };
+
     // ---------- helpers for Android ----------
     function b64ToUtf8(b64) {
         if (!b64) return "";

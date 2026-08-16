@@ -26,24 +26,37 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * GeoGebra Classic 5 Android app.
@@ -254,7 +267,7 @@ public class MainActivity extends Activity {
         addButtons(fixedBar, fixedLabels, fixedActions);
 
         LinearLayout toolbar = findViewById(R.id.toolbar);
-        String[] labels = {"新建", "打开", "保存", "另存为", "SVG", "PNG", "TikZ", "LaTeX", "脚本", "设置"};
+        String[] labels = {"新建", "打开", "保存", "另存为", "SVG", "PNG", "TikZ", "LaTeX", "脚本", "LLM", "设置"};
         Runnable[] actions = {
                 this::newConstruction,
                 this::openGgb,
@@ -265,6 +278,7 @@ public class MainActivity extends Activity {
                 this::exportTikz,
                 this::showLatexDialog,
                 this::showScriptDialog,
+                this::showLlmChatDialog,
                 this::showSettingsDialog
         };
         addButtons(toolbar, labels, actions);
@@ -774,6 +788,444 @@ public class MainActivity extends Activity {
                 .setView(scroll)
                 .setPositiveButton("关闭", null)
                 .show();
+    }
+
+    // ------------------------------------------------------------------
+    // LLM agent chat
+    // ------------------------------------------------------------------
+
+    private static final String LLM_PROTOCOL =
+            "\n\n你是一个 GeoGebra 操作智能体。你必须只输出一个 JSON 对象，格式如下：\n"
+            + "{\"thinking\":\"你的简短思考过程\",\"action\":\"ggb|js|done\","
+            + "\"code\":\"要执行的 GGB 命令（每行一条）或 JavaScript 代码\",\"done\":false}\n"
+            + "规则：\n"
+            + "1. 需要操作 GeoGebra 时，action 用 \"ggb\"，code 中每行一条 GeoGebra 命令。\n"
+            + "2. 需要页面内 JavaScript 时，action 用 \"js\"，code 是 JS 代码（可调用 window.ggbApi）。\n"
+            + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true。\n"
+            + "4. 每轮只能输出一个 JSON 对象，不要输出多余文本。\n";
+
+    private void showLlmChatDialog() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(12, 8, 12, 8);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setPadding(0, 4, 0, 8);
+
+        Button pauseBtn = new Button(this);
+        pauseBtn.setText("暂停");
+        pauseBtn.setAllCaps(false);
+
+        Button settingsBtn = new Button(this);
+        settingsBtn.setText("LLM 设置");
+        settingsBtn.setAllCaps(false);
+
+        CheckBox showThinking = new CheckBox(this);
+        showThinking.setText("显示思考链");
+
+        top.addView(pauseBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        top.addView(settingsBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        top.addView(showThinking, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(top);
+
+        ListView listView = new ListView(this);
+        final ArrayList<String> messages = new ArrayList<>();
+        final ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_1, messages);
+        listView.setAdapter(adapter);
+        root.addView(listView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setPadding(0, 8, 0, 0);
+
+        final EditText input = new EditText(this);
+        input.setHint("用自然语言描述你要画的图或要执行的操作…");
+        input.setSingleLine(true);
+        Button sendBtn = new Button(this);
+        sendBtn.setText("发送");
+        sendBtn.setAllCaps(false);
+
+        inputRow.addView(input, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        inputRow.addView(sendBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(inputRow);
+
+        final AtomicBoolean paused = new AtomicBoolean(false);
+        final AtomicBoolean running = new AtomicBoolean(false);
+
+        pauseBtn.setOnClickListener(v -> {
+            if (running.get()) {
+                paused.set(true);
+                pauseBtn.setText("暂停中");
+                appendLlmText(messages, adapter, listView, "[系统] 已请求暂停：本轮结束后停止。");
+            } else {
+                paused.set(false);
+                pauseBtn.setText("暂停");
+            }
+        });
+
+        settingsBtn.setOnClickListener(v -> showLlmSettingsDialog());
+
+        sendBtn.setOnClickListener(v -> {
+            String text = input.getText().toString().trim();
+            if (text.isEmpty()) {
+                toast("请输入需求描述");
+                return;
+            }
+            if (running.get()) {
+                toast("正在执行中，请先暂停或等待完成");
+                return;
+            }
+            input.setText("");
+            appendLlmText(messages, adapter, listView, "用户: " + text);
+            paused.set(false);
+            running.set(true);
+            pauseBtn.setText("暂停");
+            new Thread(() -> runLlmAgent(text, messages, adapter, listView,
+                    showThinking, paused, running, pauseBtn)).start();
+        });
+
+        new AlertDialog.Builder(this)
+                .setTitle("LLM 操作台（自然语言控制 GeoGebra）")
+                .setView(root)
+                .setNegativeButton("关闭", (d, w) -> {
+                    paused.set(true);
+                    running.set(false);
+                })
+                .show();
+    }
+
+    private void appendLlmText(final ArrayList<String> messages,
+            final ArrayAdapter<String> adapter, final ListView listView, final String text) {
+        mainHandler.post(() -> {
+            messages.add(text);
+            adapter.notifyDataSetChanged();
+            listView.setSelection(messages.size() - 1);
+        });
+    }
+
+    private void showLlmSettingsDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(24, 16, 24, 16);
+        scroll.addView(panel, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        EditText url = editText(panel, "API URL（OpenAI 兼容 /chat/completions）",
+                prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions"));
+        EditText key = editText(panel, "API Key",
+                prefs.getString("llm_key", ""));
+        EditText model = editText(panel, "模型名称",
+                prefs.getString("llm_model", "gpt-4o-mini"));
+        EditText temperature = editText(panel, "温度 temperature（0-2）",
+                prefs.getString("llm_temperature", "0.7"));
+        EditText maxTokens = editText(panel, "max_tokens",
+                prefs.getString("llm_max_tokens", "4096"));
+        EditText timeoutSec = editText(panel, "超时（秒）",
+                prefs.getString("llm_timeout", "120"));
+        EditText headers = editText(panel, "额外请求头 JSON（例如 {\"X-Key\":\"v\"}）",
+                prefs.getString("llm_headers", "{}"));
+        EditText body = editText(panel, "额外请求体 JSON（会合并到请求体）",
+                prefs.getString("llm_body", "{}"));
+
+        new AlertDialog.Builder(this)
+                .setTitle("LLM 设置")
+                .setView(scroll)
+                .setPositiveButton("保存", (d, w) -> {
+                    prefs.edit()
+                            .putString("llm_url", url.getText().toString().trim())
+                            .putString("llm_key", key.getText().toString().trim())
+                            .putString("llm_model", model.getText().toString().trim())
+                            .putString("llm_temperature", temperature.getText().toString().trim())
+                            .putString("llm_max_tokens", maxTokens.getText().toString().trim())
+                            .putString("llm_timeout", timeoutSec.getText().toString().trim())
+                            .putString("llm_headers", headers.getText().toString().trim())
+                            .putString("llm_body", body.getText().toString().trim())
+                            .apply();
+                    toast("LLM 设置已保存");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String readAsset(String path) throws Exception {
+        try (InputStream in = getAssets().open(path);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                bos.write(buf, 0, n);
+            }
+            return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private String evalJsSyncOnUiThread(final String js) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<String> result = new AtomicReference<>("null");
+        mainHandler.post(() -> {
+            if (webView == null) {
+                result.set("ERROR: WebView is null");
+                latch.countDown();
+                return;
+            }
+            webView.evaluateJavascript(js, value -> {
+                result.set(value == null ? "null" : value);
+                latch.countDown();
+            });
+        });
+        try {
+            latch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            return "ERROR: interrupted";
+        }
+        return result.get();
+    }
+
+    private String unwrapJsString(String jsResult) {
+        if (jsResult == null) return "";
+        String v = jsResult.trim();
+        if (v.equals("null") || v.equals("undefined")) return "";
+        if (v.startsWith("\"") && v.endsWith("\"") && v.length() >= 2) {
+            try {
+                return new JSONObject("{\"v\":" + v + "}").getString("v");
+            } catch (Exception e) {
+                return v;
+            }
+        }
+        return v;
+    }
+
+    private JSONObject callLlm(List<JSONObject> messages) throws Exception {
+        String apiUrl = prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions");
+        String apiKey = prefs.getString("llm_key", "");
+        String model = prefs.getString("llm_model", "gpt-4o-mini");
+        double temperature = parseDoublePref("llm_temperature", 0.7);
+        int maxTokens = parseIntPref("llm_max_tokens", 4096);
+        int timeoutSec = parseIntPref("llm_timeout", 120);
+
+        JSONObject payload = new JSONObject();
+        payload.put("model", model);
+        payload.put("messages", new JSONArray(messages));
+        payload.put("temperature", temperature);
+        payload.put("max_tokens", maxTokens);
+
+        JSONObject extraBody = new JSONObject(prefs.getString("llm_body", "{}"));
+        for (java.util.Iterator<String> it = extraBody.keys(); it.hasNext();) {
+            String k = it.next();
+            payload.put(k, extraBody.get(k));
+        }
+
+        HttpURLConnection conn = (HttpURLConnection) new URL(apiUrl).openConnection();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(timeoutSec * 1000);
+        conn.setReadTimeout(timeoutSec * 1000);
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        if (!apiKey.isEmpty()) {
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        }
+        JSONObject extraHeaders = new JSONObject(prefs.getString("llm_headers", "{}"));
+        for (java.util.Iterator<String> it = extraHeaders.keys(); it.hasNext();) {
+            String k = it.next();
+            conn.setRequestProperty(k, String.valueOf(extraHeaders.get(k)));
+        }
+
+        byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(bytes);
+        }
+
+        int code = conn.getResponseCode();
+        InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        String response = readStream(is);
+        if (code < 200 || code >= 300) {
+            throw new Exception("HTTP " + code + ": " + response);
+        }
+        return new JSONObject(response);
+    }
+
+    private String readStream(InputStream is) throws Exception {
+        if (is == null) return "";
+        BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) {
+            sb.append(line);
+        }
+        br.close();
+        return sb.toString();
+    }
+
+    private double parseDoublePref(String key, double def) {
+        try {
+            return Double.parseDouble(prefs.getString(key, String.valueOf(def)).trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
+
+    private int parseIntPref(String key, int def) {
+        try {
+            return Integer.parseInt(prefs.getString(key, String.valueOf(def)).trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
+
+    private JSONObject parseLlmAction(String content) {
+        int s = content.indexOf('{');
+        int e = content.lastIndexOf('}');
+        if (s >= 0 && e > s) {
+            try {
+                return new JSONObject(content.substring(s, e + 1));
+            } catch (Exception ignored) {
+                // fall through to code-fence parsing
+            }
+        }
+
+        String ggb = extractFenced(content, "ggb");
+        if (!ggb.isEmpty()) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("thinking", "");
+                o.put("action", "ggb");
+                o.put("code", ggb);
+                o.put("done", false);
+                return o;
+            } catch (Exception ignored) {}
+        }
+
+        String js = extractFenced(content, "js");
+        if (js.isEmpty()) js = extractFenced(content, "javascript");
+        if (!js.isEmpty()) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("thinking", "");
+                o.put("action", "js");
+                o.put("code", js);
+                o.put("done", false);
+                return o;
+            } catch (Exception ignored) {}
+        }
+
+        try {
+            JSONObject o = new JSONObject();
+            o.put("thinking", "");
+            o.put("action", "ggb");
+            o.put("code", content.trim());
+            o.put("done", false);
+            return o;
+        } catch (Exception ignored) {
+            return new JSONObject();
+        }
+    }
+
+    private String extractFenced(String content, String lang) {
+        String marker = "```" + lang;
+        int start = content.indexOf(marker);
+        if (start < 0) return "";
+        start = content.indexOf('\n', start);
+        if (start < 0) return "";
+        int end = content.indexOf("```", start + 1);
+        if (end < 0) return "";
+        return content.substring(start + 1, end).trim();
+    }
+
+    private void runLlmAgent(String userMessage,
+            final ArrayList<String> messages, final ArrayAdapter<String> adapter,
+            final ListView listView, final CheckBox showThinking,
+            final AtomicBoolean paused, final AtomicBoolean running, final Button pauseBtn) {
+        try {
+            String skill = readAsset("SKILL.md");
+            List<JSONObject> chat = new ArrayList<>();
+
+            JSONObject sys = new JSONObject();
+            sys.put("role", "system");
+            sys.put("content", skill + LLM_PROTOCOL);
+            chat.add(sys);
+
+            JSONObject user = new JSONObject();
+            user.put("role", "user");
+            user.put("content", userMessage);
+            chat.add(user);
+
+            int rounds = 0;
+            while (rounds < 20 && running.get()) {
+                if (paused.get()) {
+                    appendLlmText(messages, adapter, listView, "[系统] 已暂停，停止执行。");
+                    break;
+                }
+
+                appendLlmText(messages, adapter, listView,
+                        "第 " + (rounds + 1) + " 轮：正在调用模型…");
+                JSONObject resp = callLlm(chat);
+
+                JSONObject choice = resp.getJSONArray("choices").getJSONObject(0);
+                String content = choice.getJSONObject("message").getString("content");
+                chat.add(new JSONObject().put("role", "assistant").put("content", content));
+
+                if (showThinking.isChecked()) {
+                    appendLlmText(messages, adapter, listView, "[思考链 " + (rounds + 1) + "]\n" + content);
+                }
+
+                JSONObject action = parseLlmAction(content);
+                boolean done = action.optBoolean("done", false);
+                String actionType = action.optString("action", "done");
+                String code = action.optString("code", "");
+
+                if (done || "done".equals(actionType)) {
+                    appendLlmText(messages, adapter, listView,
+                            "[系统] 模型认为任务已完成。");
+                    break;
+                }
+
+                if (code.trim().isEmpty()) {
+                    chat.add(new JSONObject().put("role", "user").put("content",
+                            "[系统提示] 你没有给出可执行的 code，请重新输出 JSON 并包含 action 与 code。"));
+                    rounds++;
+                    continue;
+                }
+
+                String toolResult;
+                if ("js".equals(actionType)) {
+                    String raw = evalJsSyncOnUiThread("window.__ggbRunJsScript("
+                            + JSONObject.quote(code) + ")");
+                    toolResult = "JavaScript 执行返回: " + unwrapJsString(raw);
+                } else {
+                    String raw = evalJsSyncOnUiThread("window.__ggbRunGgbScriptWithLog("
+                            + JSONObject.quote(code) + ")");
+                    toolResult = "GGB 命令执行日志: " + unwrapJsString(raw);
+                }
+
+                String snapRaw = evalJsSyncOnUiThread("window.__ggbGetSnapshot()");
+                toolResult += "\n当前作图快照: " + unwrapJsString(snapRaw);
+
+                appendLlmText(messages, adapter, listView, "[工具结果]\n" + toolResult);
+                chat.add(new JSONObject().put("role", "user").put("content",
+                        "[工具结果]\n" + toolResult
+                        + "\n请继续操作；若已完成请输出 {\"action\":\"done\",\"done\":true}。"));
+                rounds++;
+            }
+
+            if (rounds >= 20) {
+                appendLlmText(messages, adapter, listView, "[系统] 已达到最大轮次（20），停止。");
+            }
+        } catch (Exception e) {
+            appendLlmText(messages, adapter, listView, "[错误] " + e.getMessage());
+        } finally {
+            running.set(false);
+            mainHandler.post(() -> pauseBtn.setText("暂停"));
+        }
     }
 
     private Spinner spinner(LinearLayout panel, String label, String[] values, String[] labels, String current) {
