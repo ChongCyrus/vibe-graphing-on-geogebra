@@ -143,6 +143,7 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         prefs = getSharedPreferences("ggb_classic5", MODE_PRIVATE);
+        migrateLlmPrefs();
         loadChatSessions();
 
         statusView = findViewById(R.id.status);
@@ -1103,7 +1104,8 @@ public class MainActivity extends Activity {
             + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true，code 可为空字符串。\n"
             + "4. 每轮只能输出一个 JSON 对象；不要输出自然语言、不要输出 Markdown 代码块（不要用 ```json 或 ```ggb 包裹）、不要输出注释。\n"
             + "5. 如果上一条工具结果提示“格式错误”，本轮必须只输出一个 JSON 对象，禁止任何解释性文字。\n"
-            + "6. thinking 字段只用于记录思考，执行器不会执行 thinking；真正要执行的命令必须放在 code 中。\n";
+            + "6. thinking 字段只用于记录思考，执行器不会执行 thinking；真正要执行的命令必须放在 code 中。\n"
+            + "7. 你的内部推理/思考必须极其简短（不超过 80 个字），把绝大多数 token 留给 content 中的 JSON 对象，并保证输出以 JSON 对象结束。\n";
 
     private static final String TITLE_PROMPT =
             "你是会话命名助手。请根据用户需求，生成一个不超过 12 个汉字的会话标题。"
@@ -1112,6 +1114,7 @@ public class MainActivity extends Activity {
     private static final String LLM_DEFAULT_URL = "https://api.deepseek.com/chat/completions";
     private static final String LLM_DEFAULT_KEY = "sk-a0576e6832264e9fbd13d52114575196";
     private static final String LLM_DEFAULT_MODEL = "deepseek-v4-flash";
+    private static final String LLM_DEFAULT_MAX_TOKENS = "16000";
 
     // ------------------------------------------------------------------
     // Chat data model
@@ -1725,8 +1728,8 @@ public class MainActivity extends Activity {
         EditText model = editText(panel, "模型名称", currentModel);
         EditText temperature = editText(panel, "温度 temperature（0-2）",
                 prefs.getString("llm_temperature", "0.7"));
-        EditText maxTokens = editText(panel, "max_tokens",
-                prefs.getString("llm_max_tokens", "4096"));
+        EditText maxTokens = editText(panel, "max_tokens（推理模型建议 16000，避免 thinking 耗尽 token 导致空输出）",
+                prefs.getString("llm_max_tokens", LLM_DEFAULT_MAX_TOKENS));
         EditText timeoutSec = editText(panel, "超时（秒）",
                 prefs.getString("llm_timeout", "120"));
         EditText headers = editText(panel, "额外请求头 JSON（例如 {\"X-Key\":\"v\"}）",
@@ -1822,7 +1825,7 @@ public class MainActivity extends Activity {
         String apiKey = prefs.getString("llm_key", LLM_DEFAULT_KEY);
         String model = prefs.getString("llm_model", LLM_DEFAULT_MODEL);
         double temperature = parseDoublePref("llm_temperature", 0.7);
-        int maxTokens = parseIntPref("llm_max_tokens", 4096);
+        int maxTokens = parseIntPref("llm_max_tokens", 16000);
         int timeoutSec = parseIntPref("llm_timeout", 120);
 
         JSONObject payload = new JSONObject();
@@ -1935,6 +1938,30 @@ public class MainActivity extends Activity {
             return Integer.parseInt(prefs.getString(key, String.valueOf(def)).trim());
         } catch (Exception e) {
             return def;
+        }
+    }
+
+    /**
+     * One-time migration for the LLM settings. The previous OpenAI defaults and
+     * the old max_tokens=4096 are the root cause of frequent empty content with
+     * reasoning models (the model spends all tokens on reasoning_content and
+     * never emits the JSON answer), so move them to the DeepSeek defaults.
+     */
+    private void migrateLlmPrefs() {
+        String url = prefs.getString("llm_url", "");
+        String key = prefs.getString("llm_key", "");
+        boolean untouched = url.isEmpty()
+                || (url.equals("https://api.openai.com/v1/chat/completions") && key.isEmpty());
+        if (untouched) {
+            prefs.edit()
+                    .putString("llm_url", LLM_DEFAULT_URL)
+                    .putString("llm_key", LLM_DEFAULT_KEY)
+                    .putString("llm_model", LLM_DEFAULT_MODEL)
+                    .apply();
+        }
+        String mt = prefs.getString("llm_max_tokens", "");
+        if ("4096".equals(mt) || "8192".equals(mt)) {
+            prefs.edit().putString("llm_max_tokens", LLM_DEFAULT_MAX_TOKENS).apply();
         }
     }
 
