@@ -279,19 +279,32 @@ public class MainActivity extends Activity {
     }
 
     private void undo() {
-        webView.evaluateJavascript("window.__ggbUndo && window.__ggbUndo();", null);
+        evalJsBool("(window.__ggbUndo ? window.__ggbUndo() : false)",
+                "GeoGebra 尚未就绪，无法撤销");
     }
 
     private void redo() {
-        webView.evaluateJavascript("window.__ggbRedo && window.__ggbRedo();", null);
+        evalJsBool("(window.__ggbRedo ? window.__ggbRedo() : false)",
+                "GeoGebra 尚未就绪，无法重做");
     }
 
     private void openGgbMenu() {
-        webView.evaluateJavascript("window.__ggbClickRightButton && window.__ggbClickRightButton('menu');", null);
+        evalJsBool("(window.__ggbClickRightButton ? window.__ggbClickRightButton('menu') : false)",
+                "GeoGebra 菜单暂不可用");
     }
 
     private void openGgbSearch() {
-        webView.evaluateJavascript("window.__ggbClickRightButton && window.__ggbClickRightButton('search');", null);
+        evalJsBool("(window.__ggbClickRightButton ? window.__ggbClickRightButton('search') : false)",
+                "GeoGebra 搜索暂不可用");
+    }
+
+    /** Evaluate a JS expression expected to return a boolean and toast when it returns false. */
+    private void evalJsBool(String js, String unavailableMessage) {
+        webView.evaluateJavascript(js, value -> {
+            if (!"true".equals(value)) {
+                toast(unavailableMessage);
+            }
+        });
     }
 
     // ------------------------------------------------------------------
