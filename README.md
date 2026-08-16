@@ -66,6 +66,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 | 按钮 | 功能 |
 |------|------|
+| 返回 | 从打开的搜索/材料页返回搜索（若搜索已打开则关闭搜索） |
 | 菜单 | 打开 GeoGebra 菜单（三个横线） |
 | 搜索 | 打开 GeoGebra 搜索 |
 | 新建 | 新建作图（`ggbApplet.reset()`） |
