@@ -266,7 +266,9 @@ public class MainActivity extends Activity {
             btn.setAllCaps(false);
             btn.setMinHeight(0);
             btn.setMinimumHeight(0);
-            btn.setPadding(14, 4, 14, 4);
+            btn.setMinWidth(0);
+            btn.setMinimumWidth(0);
+            btn.setPadding(12, 4, 12, 4);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
