@@ -285,6 +285,151 @@
 
     installToolbarTouchScroll();
 
+    // ---------- drawing area tap guard ----------
+    // GeoGebra executes the first step of a drawing tool on pointerdown.
+    // On a touch screen that means a drag (or the first finger of a pinch)
+    // already places a point before the gesture is recognized as a drag.
+    // For tap-only tools we suppress the native pointerdown and only when the
+    // finger is released without movement do we re-dispatch a synthetic tap.
+    // Move / pan / zoom / pen / freehand modes keep GeoGebra's native gesture
+    // handling.
+    function currentMode() {
+        var btn = document.querySelector(".toolbarPanel .toolbar_button[isSelected=\"true\"]");
+        if (!btn) return -1;
+        var m = parseInt(btn.getAttribute("mode"), 10);
+        return isNaN(m) ? -1 : m;
+    }
+
+    function isTapOnlyMode(mode) {
+        if (mode < 0) return false;
+        // 0 = Move, 40 = TranslateView, 41 = ZoomIn, 42 = ZoomOut,
+        // 62 = Pen, 73 = Freehand Shape
+        var excluded = [0, 40, 41, 42, 62, 73];
+        return excluded.indexOf(mode) === -1;
+    }
+
+    function firePointerTap(target, clientX, clientY) {
+        var rect = target.getBoundingClientRect();
+
+        function createEvent(type) {
+            var ev;
+            if (typeof PointerEvent === "function") {
+                ev = new PointerEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: true,
+                    pointerId: 1,
+                    pointerType: "touch",
+                    isPrimary: true,
+                    clientX: clientX,
+                    clientY: clientY,
+                    button: 0,
+                    buttons: type === "pointerdown" ? 1 : 0,
+                    width: 1,
+                    height: 1,
+                    pressure: 0.5
+                });
+                try {
+                    Object.defineProperty(ev, "offsetX", {
+                        get: function () { return clientX - rect.left; }
+                    });
+                    Object.defineProperty(ev, "offsetY", {
+                        get: function () { return clientY - rect.top; }
+                    });
+                } catch (e) {
+                    // keep the browser defaults
+                }
+            } else {
+                ev = document.createEvent("MouseEvents");
+                ev.initMouseEvent(type, true, true, window, 0,
+                        clientX, clientY, clientX, clientY,
+                        false, false, false, false, 0, null);
+            }
+            return ev;
+        }
+
+        target.dispatchEvent(createEvent("pointerdown"));
+        target.dispatchEvent(createEvent("pointerup"));
+    }
+
+    function installDrawingTapGuard() {
+        var activePointers = {};
+        var syntheticTap = false;
+
+        function isCanvasEvent(e) {
+            var t = e.target;
+            return !!(t && t.nodeType === 1 && t.closest && t.closest("canvas"));
+        }
+
+        document.addEventListener("pointerdown", function (e) {
+            if (syntheticTap) return;
+            if (e.pointerType === "mouse") return;
+            if (!isCanvasEvent(e)) return;
+            if (!isTapOnlyMode(currentMode())) return;
+
+            e.stopPropagation();
+            if (e.cancelable) e.preventDefault();
+
+            activePointers[e.pointerId] = {
+                x: e.clientX,
+                y: e.clientY,
+                time: Date.now(),
+                target: e.target,
+                moved: false
+            };
+
+            // Second finger (pinch): never turn any finger into a tap.
+            var ids = Object.keys(activePointers);
+            if (ids.length >= 2) {
+                for (var i = 0; i < ids.length; i++) {
+                    activePointers[ids[i]].moved = true;
+                }
+            }
+        }, true);
+
+        document.addEventListener("pointermove", function (e) {
+            var p = activePointers[e.pointerId];
+            if (!p) return;
+            e.stopPropagation();
+            var dx = e.clientX - p.x;
+            var dy = e.clientY - p.y;
+            if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+                p.moved = true;
+            }
+        }, true);
+
+        function finishPointer(e, cancelled) {
+            var p = activePointers[e.pointerId];
+            if (!p) return;
+            delete activePointers[e.pointerId];
+
+            // The original pointerdown was suppressed, so the matching
+            // pointerup must not reach GeoGebra either.
+            e.stopPropagation();
+
+            if (cancelled || p.moved) return;
+            if (Date.now() - p.time > 800) return;
+            if (Object.keys(activePointers).length > 0) return;
+
+            syntheticTap = true;
+            try {
+                firePointerTap(p.target, p.x, p.y);
+            } finally {
+                syntheticTap = false;
+            }
+        }
+
+        document.addEventListener("pointerup", function (e) {
+            finishPointer(e, false);
+        }, true);
+
+        document.addEventListener("pointercancel", function (e) {
+            finishPointer(e, true);
+        }, true);
+    }
+
+    installDrawingTapGuard();
+
     // ---------- search field: use the system IME instead of GeoGebra's keyboard ----------
     document.addEventListener("focus", function (event) {
         var target = event.target;
