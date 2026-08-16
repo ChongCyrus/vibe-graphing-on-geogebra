@@ -285,14 +285,15 @@
 
     installToolbarTouchScroll();
 
-    // ---------- drawing area tap guard ----------
+    // ---------- drawing area tap/drag/pinch guard ----------
     // GeoGebra executes the first step of a drawing tool on pointerdown.
-    // On a touch screen that means a drag (or the first finger of a pinch)
-    // already places a point before the gesture is recognized as a drag.
-    // For tap-only tools we suppress the native pointerdown and only when the
-    // finger is released without movement do we re-dispatch a synthetic tap.
-    // Move / pan / zoom / pen / freehand modes keep GeoGebra's native gesture
-    // handling.
+    // For tap-only tools we suppress the first pointerdown and then:
+    //   * release without movement -> re-dispatch a synthetic tap
+    //   * movement beyond threshold -> forward the original pointerdown so
+    //     GeoGebra can perform its normal drag/creation gesture
+    //   * second finger -> temporarily switch to Move mode, forward the first
+    //     pointerdown and let the pinch go through natively; restore the
+    //     drawing tool when the pinch ends
     function currentMode() {
         var btn = document.querySelector(".toolbarPanel .toolbar_button[isSelected=\"true\"]");
         if (!btn) return -1;
@@ -308,94 +309,153 @@
         return excluded.indexOf(mode) === -1;
     }
 
-    function firePointerTap(target, clientX, clientY) {
+    function createSyntheticPointerEvent(type, target, clientX, clientY, pointerId) {
         var rect = target.getBoundingClientRect();
-
-        function createEvent(type) {
-            var ev;
-            if (typeof PointerEvent === "function") {
-                ev = new PointerEvent(type, {
-                    bubbles: true,
-                    cancelable: true,
-                    composed: true,
-                    pointerId: 1,
-                    pointerType: "touch",
-                    isPrimary: true,
-                    clientX: clientX,
-                    clientY: clientY,
-                    button: 0,
-                    buttons: type === "pointerdown" ? 1 : 0,
-                    width: 1,
-                    height: 1,
-                    pressure: 0.5
+        var ev;
+        if (typeof PointerEvent === "function") {
+            ev = new PointerEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                pointerId: pointerId,
+                pointerType: "touch",
+                isPrimary: true,
+                clientX: clientX,
+                clientY: clientY,
+                button: 0,
+                buttons: type === "pointerdown" ? 1 : 0,
+                width: 1,
+                height: 1,
+                pressure: 0.5
+            });
+            try {
+                Object.defineProperty(ev, "offsetX", {
+                    get: function () { return clientX - rect.left; }
                 });
-                try {
-                    Object.defineProperty(ev, "offsetX", {
-                        get: function () { return clientX - rect.left; }
-                    });
-                    Object.defineProperty(ev, "offsetY", {
-                        get: function () { return clientY - rect.top; }
-                    });
-                } catch (e) {
-                    // keep the browser defaults
-                }
-            } else {
-                ev = document.createEvent("MouseEvents");
-                ev.initMouseEvent(type, true, true, window, 0,
-                        clientX, clientY, clientX, clientY,
-                        false, false, false, false, 0, null);
+                Object.defineProperty(ev, "offsetY", {
+                    get: function () { return clientY - rect.top; }
+                });
+            } catch (e) {
+                // keep the browser defaults
             }
-            return ev;
+        } else {
+            ev = document.createEvent("MouseEvents");
+            ev.initMouseEvent(type, true, true, window, 0,
+                    clientX, clientY, clientX, clientY,
+                    false, false, false, false, 0, null);
         }
+        return ev;
+    }
 
-        target.dispatchEvent(createEvent("pointerdown"));
-        target.dispatchEvent(createEvent("pointerup"));
+    function firePointerTap(target, clientX, clientY) {
+        target.dispatchEvent(createSyntheticPointerEvent("pointerdown", target, clientX, clientY, 1));
+        target.dispatchEvent(createSyntheticPointerEvent("pointerup", target, clientX, clientY, 1));
     }
 
     function installDrawingTapGuard() {
         var activePointers = {};
         var syntheticTap = false;
+        var pinch = null;
 
         function isCanvasEvent(e) {
             var t = e.target;
             return !!(t && t.nodeType === 1 && t.closest && t.closest("canvas"));
         }
 
+        function setModeSafely(mode) {
+            try {
+                if (window.ggbApi && typeof window.ggbApi.setMode === "function") {
+                    window.ggbApi.setMode(mode);
+                }
+            } catch (err) {
+                // ignore
+            }
+        }
+
+        function restorePinchMode() {
+            if (pinch) {
+                setModeSafely(pinch.prevMode);
+                pinch = null;
+            }
+        }
+
+        function forwardPointerDown(p, pointerId) {
+            if (p.forwarded) return;
+            p.forwarded = true;
+            var ev = createSyntheticPointerEvent("pointerdown", p.target, p.x, p.y, pointerId);
+            ev.__ggbSyntheticTap = true;
+            p.target.dispatchEvent(ev);
+        }
+
         document.addEventListener("pointerdown", function (e) {
-            if (syntheticTap) return;
+            if (syntheticTap || e.__ggbSyntheticTap) return;
             if (e.pointerType === "mouse") return;
             if (!isCanvasEvent(e)) return;
-            if (!isTapOnlyMode(currentMode())) return;
+            var mode = currentMode();
+            if (!isTapOnlyMode(mode)) return;
 
+            var ids = Object.keys(activePointers);
+
+            // Second finger: start a pinch in Move mode so the drawing tool's
+            // first step is not executed; forward the first finger's down so
+            // GeoGebra sees two pointers and zooms natively.
+            if (ids.length >= 1 && !pinch) {
+                pinch = { prevMode: mode };
+                setModeSafely(0);
+
+                var firstId = ids[0];
+                var first = activePointers[firstId];
+                forwardPointerDown(first, firstId);
+                first.moved = true;
+
+                activePointers[e.pointerId] = {
+                    x: e.clientX,
+                    y: e.clientY,
+                    time: Date.now(),
+                    target: e.target,
+                    moved: true,
+                    forwarded: true
+                };
+                // Let this second pointerdown continue to GeoGebra.
+                return;
+            }
+
+            if (ids.length >= 1) {
+                // Extra fingers during pinch: suppress.
+                e.stopPropagation();
+                if (e.cancelable) e.preventDefault();
+                return;
+            }
+
+            // First finger: suppress for now.
             e.stopPropagation();
             if (e.cancelable) e.preventDefault();
-
             activePointers[e.pointerId] = {
                 x: e.clientX,
                 y: e.clientY,
                 time: Date.now(),
                 target: e.target,
-                moved: false
+                moved: false,
+                forwarded: false
             };
-
-            // Second finger (pinch): never turn any finger into a tap.
-            var ids = Object.keys(activePointers);
-            if (ids.length >= 2) {
-                for (var i = 0; i < ids.length; i++) {
-                    activePointers[ids[i]].moved = true;
-                }
-            }
         }, true);
 
         document.addEventListener("pointermove", function (e) {
             var p = activePointers[e.pointerId];
             if (!p) return;
-            e.stopPropagation();
+            if (p.forwarded) return; // already forwarded: let native move through
+
             var dx = e.clientX - p.x;
             var dy = e.clientY - p.y;
             if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
                 p.moved = true;
+                // Forward the original pointerdown so GeoGebra starts the drag
+                // at the original position, then let this move through too.
+                forwardPointerDown(p, e.pointerId);
+                return;
             }
+
+            e.stopPropagation();
         }, true);
 
         function finishPointer(e, cancelled) {
@@ -403,19 +463,24 @@
             if (!p) return;
             delete activePointers[e.pointerId];
 
-            // The original pointerdown was suppressed, so the matching
-            // pointerup must not reach GeoGebra either.
-            e.stopPropagation();
+            if (!p.forwarded) {
+                // The original pointerdown was suppressed, so the matching
+                // pointerup must not reach GeoGebra either.
+                e.stopPropagation();
 
-            if (cancelled || p.moved) return;
-            if (Date.now() - p.time > 800) return;
-            if (Object.keys(activePointers).length > 0) return;
+                if (!cancelled && !p.moved && Date.now() - p.time <= 800
+                        && Object.keys(activePointers).length === 0) {
+                    syntheticTap = true;
+                    try {
+                        firePointerTap(p.target, p.x, p.y);
+                    } finally {
+                        syntheticTap = false;
+                    }
+                }
+            }
 
-            syntheticTap = true;
-            try {
-                firePointerTap(p.target, p.x, p.y);
-            } finally {
-                syntheticTap = false;
+            if (pinch && Object.keys(activePointers).length === 0) {
+                restorePinchMode();
             }
         }
 
@@ -431,23 +496,59 @@
     installDrawingTapGuard();
 
     // ---------- search field: use the system IME instead of GeoGebra's keyboard ----------
+    var lastSearchQuery = "";
+    var returnToSearchAfterMaterial = false;
+
+    function currentSearchInput() {
+        return document.querySelector(".searchBar input, .searchBar textarea");
+    }
+
+    function makeSearchInputEditable() {
+        var input = currentSearchInput();
+        if (!input) return;
+        try {
+            input.readOnly = false;
+            input.removeAttribute("readonly");
+        } catch (err) {
+            // ignore
+        }
+        var wrapper = input.closest(".searchInputField") || input.parentElement;
+        if (wrapper) {
+            wrapper.classList.remove("withCursorOverlay");
+        }
+    }
+
+    // GeoGebra creates the search field as a readonly native input and shows
+    // its own keyboard. Make the native input editable again before focus.
+    document.addEventListener("touchstart", function (event) {
+        var target = event.target;
+        if (target && target.nodeType === 1 && target.closest
+                && target.closest(".searchBar")) {
+            makeSearchInputEditable();
+            // Do not let GeoGebra's own touchstart handler prevent native focus.
+            event.stopPropagation();
+        }
+    }, { capture: true, passive: false });
+
+    document.addEventListener("pointerdown", function (event) {
+        var target = event.target;
+        if (target && target.nodeType === 1 && target.closest
+                && target.closest(".searchBar")) {
+            makeSearchInputEditable();
+        }
+    }, true);
+
     document.addEventListener("focus", function (event) {
         var target = event.target;
         if (target && target.nodeType === 1 && target.closest
                 && target.closest(".searchBar")) {
+            makeSearchInputEditable();
             // Stop GWT's own focus handler (which would open GeoGebra's
-            // on-screen keyboard). The input element is still focused natively,
-            // so Android shows the default IME.
+            // on-screen keyboard). The input is still focused natively, so
+            // Android shows the default IME.
             event.stopPropagation();
         }
     }, true);
-
-    // ---------- keep the last executed search query, restore it when returning ----------
-    var lastSearchQuery = "";
-
-    function currentSearchInput() {
-        return document.querySelector(".searchBar input[type=text]");
-    }
 
     document.addEventListener("keypress", function (e) {
         if (e.key === "Enter" || e.keyCode === 13) {
@@ -465,8 +566,27 @@
             if (input) {
                 lastSearchQuery = input.value || lastSearchQuery;
             }
+            if (document.querySelector(".openFileView")) {
+                returnToSearchAfterMaterial = true;
+            }
         }
     }, true);
+
+    function fillSearchAndRun() {
+        var input = currentSearchInput();
+        if (!input) return false;
+        input.value = lastSearchQuery;
+        try {
+            var ev = new KeyboardEvent("keypress", {
+                key: "Enter", code: "Enter", keyCode: 13,
+                which: 13, charCode: 13, bubbles: true
+            });
+            input.dispatchEvent(ev);
+        } catch (err) {
+            // best effort: the query is already filled in
+        }
+        return true;
+    }
 
     window.__ggbBack = function () {
         var openView = document.querySelector(".openFileView");
@@ -474,35 +594,31 @@
             var back = openView.querySelector(".headerBackButton");
             if (back) {
                 back.click();
-                return true;
             }
+            returnToSearchAfterMaterial = false;
+            return true;
         }
 
-        // Reopen search (e.g. when a searched material is currently open).
-        var reopened = window.__ggbClickRightButton
-                && window.__ggbClickRightButton("search");
-        if (reopened && lastSearchQuery) {
-            var attempts = 0;
-            var timer = setInterval(function () {
-                var input = currentSearchInput();
-                if (input) {
-                    clearInterval(timer);
-                    input.value = lastSearchQuery;
-                    try {
-                        var ev = new KeyboardEvent("keypress", {
-                            key: "Enter", code: "Enter", keyCode: 13,
-                            which: 13, charCode: 13, bubbles: true
-                        });
-                        input.dispatchEvent(ev);
-                    } catch (err) {
-                        // best effort: the query is already filled in
+        // Opened a material from search results: go back to the search view.
+        if (returnToSearchAfterMaterial) {
+            returnToSearchAfterMaterial = false;
+            var reopened = window.__ggbClickRightButton
+                    && window.__ggbClickRightButton("search");
+            if (reopened && lastSearchQuery) {
+                var attempts = 0;
+                var timer = setInterval(function () {
+                    if (fillSearchAndRun()) {
+                        clearInterval(timer);
+                    } else if (++attempts > 40) {
+                        clearInterval(timer);
                     }
-                } else if (++attempts > 40) {
-                    clearInterval(timer);
-                }
-            }, 100);
+                }, 100);
+            }
+            return true;
         }
-        return reopened;
+
+        // Main drawing page: nothing to go back to; do nothing.
+        return true;
     };
 
     // ---------- helpers for Android ----------
@@ -643,6 +759,9 @@
     // in the DOM and remain clickable programmatically.
     // Normal child order in rightButtonPanel: undo, redo, search, menu.
     window.__ggbClickRightButton = function (role) {
+        if (role === "search") {
+            returnToSearchAfterMaterial = false;
+        }
         var rbp = document.querySelector(".rightButtonPanel");
         if (!rbp) return false;
         var kids = rbp.children;
