@@ -1547,6 +1547,11 @@ public class MainActivity extends Activity {
                                                 if (chatSessions.isEmpty()) {
                                                     createNewChatSession();
                                                 } else if (s == currentChatSession) {
+                                                    // Deleting the active session stops its run, just
+                                                    // like switching or creating a session.
+                                                    chatStopped.set(true);
+                                                    chatRunId++;
+                                                    chatRunning.set(false);
                                                     currentChatSession = chatSessions.get(0);
                                                     chatAdapter = new ChatAdapter(currentChatSession);
                                                     chatListView.setAdapter(chatAdapter);
@@ -2123,8 +2128,9 @@ public class MainActivity extends Activity {
 
                 JSONObject action = parseLlmAction(content);
                 boolean done = action.optBoolean("done", false);
-                String actionType = action.optString("action", "done");
-                String code = action.optString("code", "");
+                String actionType = jsonString(action, "action");
+                if (actionType.isEmpty()) actionType = "done";
+                String code = jsonString(action, "code");
 
                 if (done || "done".equals(actionType)) {
                     appendMessageTo(session, "system", "[系统] 模型认为任务已完成。");
