@@ -40,6 +40,10 @@ Android 侧通过 `webView.evaluateJavascript(...)` 调用 `window.__ggb*` 函�
 | `window.__ggbRunGgbScriptWithLog(script)` | 多行 GeoGebra 命令 | JSON 字符串 | 逐行执行并返回每行 `{line,ok,error}` 日志 |
 | `window.__ggbRunJsScript(script)` | JavaScript 代码 | 字符串 | 在页面上下文执行 JS 并返回结果 |
 | `window.__ggbGetSnapshot()` | 无 | JSON 字符串 | 当前作图快照：对象数量/名称/类型/当前模式 |
+| `window.__ggbListObjects()` | 无 | JSON 字符串 | 对象数组 `[{name,type}]`（用于对象管理/多选） |
+| `window.__ggbClearAll()` | 无 | boolean | 删除所有对象（保留坐标轴/网格/视图设置，可撤销） |
+| `window.__ggbSetMode(mode)` | 模式编号 | boolean | 切换工具模式（如 77=框选） |
+| `window.__ggbDeleteSelected()` | 无 | boolean | 删除当前绘图区中所有被选中对象（点选/框选） |
 | `window.__ggbGetTikz(cbId, settingsJson)` | callback id + TikZ 设置 JSON | 回调 | 当前绘图转 TikZ 代码块 |
 | `window.__ggbBack()` | 无 | boolean | 应用内返回：搜索页关闭 / 材料页返回搜索 / 主页面无操作 |
 | `window.__ggbClickRightButton(role)` | `"menu"` 或 `"search"` | boolean | 触发 GeoGebra 菜单/搜索 |
@@ -120,6 +124,60 @@ ggbApi.getBase64(function(b64){ ... });            // .ggb base64
   ```
 
 LLM 生成脚本时，应保证每行可独立被 `ggbApi.evalCommand` 执行。
+
+---
+
+## 4.5 填充（虚实/深浅）、颜色与批量样式
+
+### 4.5.1 支持填充（虚实）的对象
+
+GeoGebra 内核中只有 `isFillable()` 为真的对象才支持填充（即“虚实”/透明度）。在 Classic 5 二维绘图中：
+
+| 支持填充 | 说明 |
+|----------|------|
+| 多边形 | `Polygon(...)`、正多边形、刚体多边形、向量多边形等 |
+| 圆、椭圆、抛物线、双曲线 | 圆锥曲线（线除外） |
+| 圆弧、扇形、半圆、外接圆弧/扇形 | `CircularArc` / `CircularSector` / `Semicircle` 等圆锥曲线部分 |
+| 不等式区域 | 形如 `y < f(x)`、`x^2 + y^2 < 1` 等由不等式构建的区域 |
+| 列表 | 由上述可填充对象组成的列表 |
+| 轨迹 Locus | 内核允许填充（实际渲染取决于轨迹是否闭合） |
+
+**明确不支持填充**：
+- 直线、线段、射线、折线 PolyLine（这些是“线”，只有线型/线宽，没有填充）
+- `BezierCurve` 明确不支持填充
+- 参数方程 `Curve(...)` 绘制的曲线**一般不支持**填充设置（即便内核未完全禁止，也不保证可见填充效果；需要填充时请改用不等式区域或多边形/圆锥曲线）
+
+### 4.5.2 GGB 命令：设置颜色与填充
+
+```ggb
+SetColor(poly1, "red")          # 颜色名：red/green/blue/orange/purple/black...
+SetColor(poly1, "#FF6600")      # 十六进制颜色
+SetColor(poly1, 255, 102, 0)    # RGB 三个 0-255 的数值
+SetFilling(poly1, 0.5)          # 填充虚实：0=全透明/空心，1=全实心（0..1）
+SetDynamicColor(poly1, r, g, b)       # 动态颜色（r/g/b 可为数值对象）
+SetDynamicColor(poly1, r, g, b, a)    # 动态颜色 + 透明度分量
+SetLineThickness(c, 5)          # 线宽 1-13
+SetLineOpacity(c, 0.5)          # 线透明度 0-1
+SetPointSize(A, 4)              # 点大小 1-9
+ShowLabel(A, false)             # 隐藏/显示标签（true/false）
+```
+
+### 4.5.3 JS API：设置颜色与填充
+
+`window.ggbApi` 也提供等价的 JS 方法：
+
+```js
+ggbApi.setColor("poly1", 255, 0, 0);   // 红
+ggbApi.getColor("poly1");               // "#FF0000"
+ggbApi.setFilling("poly1", 0.5);        // 填充虚实 0..1
+ggbApi.getFilling("poly1");             // 当前 alpha 值
+ggbApi.setLineThickness("c", 5);
+ggbApi.setPointSize("A", 4);
+ggbApi.setLabelVisible("A", true);
+```
+
+> 注意：`SetFilling` / `ggbApi.setFilling` 的值域是 **0..1**（不是 0..100）。
+> 颜色命令 `SetColor` 对大多数对象都有效；`SetFilling` 只对 4.5.1 中列出的可填充对象有可见效果。
 
 ---
 

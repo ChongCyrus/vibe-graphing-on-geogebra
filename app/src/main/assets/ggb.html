@@ -776,6 +776,97 @@
         return JSON.stringify(snap);
     };
 
+    // ---------- object management helpers ----------
+    window.__ggbListObjects = function () {
+        var out = [];
+        if (!api) return JSON.stringify(out);
+        try {
+            var names = (typeof api.getAllObjectNames === "function")
+                    ? api.getAllObjectNames() : [];
+            for (var i = 0; i < names.length; i++) {
+                var name = names[i];
+                var type = "";
+                try {
+                    type = (typeof api.getObjectType === "function")
+                            ? api.getObjectType(name) : "";
+                } catch (e2) {}
+                out.push({ name: name, type: type });
+            }
+        } catch (e) {}
+        return JSON.stringify(out);
+    };
+
+    // Delete every construction object while keeping axes/grid/view settings.
+    window.__ggbClearAll = function () {
+        if (!api) return false;
+        try {
+            if (typeof api.setUndoPoint === "function") {
+                api.setUndoPoint();
+            }
+            var names = (typeof api.getAllObjectNames === "function")
+                    ? api.getAllObjectNames() : [];
+            for (var i = 0; i < names.length; i++) {
+                try {
+                    if (typeof api.deleteObject === "function") {
+                        api.deleteObject(names[i]);
+                    }
+                } catch (e) {}
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.__ggbSetMode = function (mode) {
+        if (!api || typeof api.setMode !== "function") return false;
+        try {
+            api.setMode(mode);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // Dispatch a native Delete key so GeoGebra deletes whatever is currently
+    // selected in the view (tap-selected or marquee-selected objects).
+    window.__ggbDeleteSelected = function () {
+        try {
+            if (api && typeof api.setUndoPoint === "function") {
+                api.setUndoPoint();
+            }
+            // Dispatch from inside #ggbApplet so the event bubbles through
+            // whichever element GWT sank key events on (applet container or body).
+            var applet = document.querySelector("#ggbApplet");
+            var target = (applet && applet.firstElementChild) ? applet.firstElementChild
+                    : (applet || document.body || document.documentElement);
+            var ev;
+            if (typeof KeyboardEvent === "function") {
+                ev = new KeyboardEvent("keydown", {
+                    bubbles: true,
+                    cancelable: true,
+                    key: "Delete",
+                    code: "Delete"
+                });
+                try {
+                    Object.defineProperty(ev, "keyCode", { get: function () { return 46; } });
+                    Object.defineProperty(ev, "which", { get: function () { return 46; } });
+                    Object.defineProperty(ev, "charCode", { get: function () { return 0; } });
+                } catch (e2) {}
+            } else {
+                ev = document.createEvent("Event");
+                ev.initEvent("keydown", true, true);
+                try {
+                    Object.defineProperty(ev, "keyCode", { get: function () { return 46; } });
+                } catch (e3) {}
+            }
+            target.dispatchEvent(ev);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
     // ---------- helpers for Android ----------
     function b64ToUtf8(b64) {
         if (!b64) return "";

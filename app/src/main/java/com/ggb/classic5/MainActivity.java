@@ -25,6 +25,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
@@ -122,6 +123,18 @@ public class MainActivity extends Activity {
     private AtomicBoolean chatRunStopped = new AtomicBoolean(false);
     private long chatRunId = 0;
     private Dialog chatDialog;
+    private boolean chatPinnedToBottom = true;
+    private boolean chatRefreshScheduled = false;
+    private final Runnable chatRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            chatRefreshScheduled = false;
+            if (chatAdapter != null && chatListView != null) {
+                chatAdapter.notifyDataSetChanged();
+                scrollChatToBottom();
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -293,7 +306,7 @@ public class MainActivity extends Activity {
         addButtons(fixedBar, fixedLabels, fixedActions);
 
         LinearLayout toolbar = findViewById(R.id.toolbar);
-        String[] labels = {"新建", "打开", "保存", "另存为", "SVG", "PNG", "TikZ", "LaTeX", "脚本", "LLM", "设置"};
+        String[] labels = {"新建", "打开", "保存", "另存为", "SVG", "PNG", "TikZ", "LaTeX", "脚本", "LLM", "对象", "设置"};
         Runnable[] actions = {
                 this::newConstruction,
                 this::openGgb,
@@ -305,6 +318,7 @@ public class MainActivity extends Activity {
                 this::showLatexDialog,
                 this::showScriptDialog,
                 this::showLlmChatDialog,
+                this::showObjectManagerDialog,
                 this::showSettingsDialog
         };
         addButtons(toolbar, labels, actions);
@@ -817,6 +831,255 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
+    // Object manager (clear all / marquee / multi-select / batch style)
+    // ------------------------------------------------------------------
+
+    private void showObjectManagerDialog() {
+        final Dialog dialog = new Dialog(this);
+        dialog.setTitle("对象管理");
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(10, 10, 10, 10);
+        root.setBackgroundColor(Color.rgb(248, 248, 248));
+
+        final TextView countView = new TextView(this);
+        countView.setPadding(8, 4, 8, 8);
+        countView.setTextColor(Color.rgb(80, 80, 80));
+        root.addView(countView);
+
+        final ListView listView = new ListView(this);
+        listView.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+        final ArrayList<String> objectNames = new ArrayList<>();
+        final ArrayAdapter<String> listAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_multiple_choice);
+        listView.setAdapter(listAdapter);
+        root.addView(listView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        final Runnable refresh = () -> loadObjectList(listView, objectNames, listAdapter, countView);
+
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        Button allBtn = styleTopButton("全选");
+        Button noneBtn = styleTopButton("全不选");
+        Button refreshBtn = styleTopButton("刷新");
+        allBtn.setOnClickListener(v -> {
+            for (int i = 0; i < listAdapter.getCount(); i++) {
+                listView.setItemChecked(i, true);
+            }
+        });
+        noneBtn.setOnClickListener(v -> {
+            listView.clearChoices();
+            listAdapter.notifyDataSetChanged();
+        });
+        refreshBtn.setOnClickListener(v -> refresh.run());
+        row1.addView(allBtn);
+        row1.addView(noneBtn);
+        row1.addView(refreshBtn);
+        root.addView(row1);
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        Button marqueeBtn = styleTopButton("框选模式");
+        Button deleteMarqueeBtn = styleTopButton("删除框选对象");
+        Button clearAllBtn = styleTopButton("清空所有对象");
+        marqueeBtn.setOnClickListener(v -> {
+            webView.evaluateJavascript(
+                    "window.__ggbSetMode ? window.__ggbSetMode(77) : false", value -> {
+                        if (!"true".equals(value)) {
+                            toast("无法切换到框选模式（GeoGebra 未就绪）");
+                        }
+                    });
+            dialog.dismiss();
+            toast("已切换到框选模式：在绘图区拖拽一个矩形框选对象；之后重新打开“对象”可删除框选对象。");
+        });
+        deleteMarqueeBtn.setOnClickListener(v -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("删除框选对象")
+                    .setMessage("将删除当前绘图区中所有被选中的对象（包括点选和框选）。确定？")
+                    .setPositiveButton("删除", (d, w) -> {
+                        webView.evaluateJavascript(
+                                "window.__ggbDeleteSelected ? window.__ggbDeleteSelected() : false",
+                                value -> {
+                                    toast("true".equals(value) ? "已发送删除命令" : "删除命令发送失败");
+                                    refresh.run();
+                                });
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+        clearAllBtn.setOnClickListener(v -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("清空所有对象")
+                    .setMessage("将删除当前作图页面中的全部对象（保留坐标轴、网格与视图设置）。确定？")
+                    .setPositiveButton("清空", (d, w) -> {
+                        webView.evaluateJavascript(
+                                "window.__ggbClearAll ? window.__ggbClearAll() : false",
+                                value -> {
+                                    toast("true".equals(value) ? "已清空所有对象" : "清空失败（GeoGebra 未就绪）");
+                                    refresh.run();
+                                });
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+        row2.addView(marqueeBtn);
+        row2.addView(deleteMarqueeBtn);
+        row2.addView(clearAllBtn);
+        root.addView(row2);
+
+        LinearLayout row3 = new LinearLayout(this);
+        row3.setOrientation(LinearLayout.HORIZONTAL);
+        Button deleteCheckedBtn = styleTopButton("删除勾选");
+        Button styleCheckedBtn = styleTopButton("批量设置属性");
+        deleteCheckedBtn.setOnClickListener(v -> {
+            ArrayList<String> checked = checkedObjectNames(listView, objectNames);
+            if (checked.isEmpty()) {
+                toast("请先在列表中勾选对象");
+                return;
+            }
+            StringBuilder script = new StringBuilder();
+            for (String name : checked) {
+                script.append("Delete(").append(name).append(")\n");
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("删除勾选对象")
+                    .setMessage("确定删除勾选的 " + checked.size() + " 个对象？")
+                    .setPositiveButton("删除", (d, w) ->
+                            runGgbScriptAndRefresh(script.toString(), refresh))
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+        styleCheckedBtn.setOnClickListener(v -> {
+            ArrayList<String> checked = checkedObjectNames(listView, objectNames);
+            if (checked.isEmpty()) {
+                toast("请先在列表中勾选对象");
+                return;
+            }
+            showBatchPropertiesDialog(checked, refresh);
+        });
+        row3.addView(deleteCheckedBtn);
+        row3.addView(styleCheckedBtn);
+        root.addView(row3);
+
+        dialog.setContentView(root);
+        dialog.getWindow().setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        dialog.show();
+        refresh.run();
+    }
+
+    private ArrayList<String> checkedObjectNames(ListView listView, ArrayList<String> objectNames) {
+        ArrayList<String> out = new ArrayList<>();
+        for (int i = 0; i < objectNames.size(); i++) {
+            if (listView.isItemChecked(i)) {
+                out.add(objectNames.get(i));
+            }
+        }
+        return out;
+    }
+
+    private void loadObjectList(ListView listView, ArrayList<String> objectNames,
+                                ArrayAdapter<String> adapter, TextView countView) {
+        objectNames.clear();
+        adapter.clear();
+        adapter.notifyDataSetChanged();
+        webView.evaluateJavascript(
+                "window.__ggbListObjects ? window.__ggbListObjects() : '[]'", value -> {
+                    try {
+                        JSONArray arr = new JSONArray(unwrapJsString(value));
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject o = arr.optJSONObject(i);
+                            if (o == null) continue;
+                            String name = o.optString("name", "");
+                            String type = o.optString("type", "");
+                            if (name.isEmpty()) continue;
+                            objectNames.add(name);
+                            adapter.add(type.isEmpty() ? name : name + "  (" + type + ")");
+                        }
+                    } catch (Exception e) {
+                        adapter.add("读取对象列表失败: " + e.getMessage());
+                    }
+                    countView.setText("共 " + objectNames.size() + " 个对象；勾选后可删除或批量设置属性。");
+                    adapter.notifyDataSetChanged();
+                });
+    }
+
+    private void runGgbScriptAndRefresh(String script, Runnable after) {
+        webView.evaluateJavascript(
+                "window.__ggbRunGgbScriptWithLog ? window.__ggbRunGgbScriptWithLog("
+                        + JSONObject.quote(script) + ") : '{}'",
+                value -> {
+                    int executed = 0;
+                    try {
+                        JSONObject res = new JSONObject(unwrapJsString(value));
+                        executed = res.optInt("executed", 0);
+                    } catch (Exception ignored) {
+                    }
+                    toast("已执行 " + executed + " 条命令");
+                    if (after != null) after.run();
+                });
+    }
+
+    private void showBatchPropertiesDialog(ArrayList<String> checkedNames, Runnable after) {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(24, 16, 24, 16);
+        scroll.addView(panel, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        EditText color = editText(panel, "颜色（如 red、blue 或 #FF6600；留空不修改）", "");
+        EditText filling = editText(panel, "填充虚实 0-1（0=空心，1=实心；留空不修改）", "");
+        EditText thickness = editText(panel, "线宽 1-13（留空不修改）", "");
+        EditText pointSize = editText(panel, "点大小 1-9（留空不修改）", "");
+        Spinner label = spinner(panel, "显示标签",
+                new String[]{"keep", "true", "false"},
+                new String[]{"不变", "显示", "隐藏"},
+                "keep");
+
+        new AlertDialog.Builder(this)
+                .setTitle("批量设置属性（勾选 " + checkedNames.size() + " 个对象）")
+                .setView(scroll)
+                .setPositiveButton("应用", (d, w) -> {
+                    StringBuilder script = new StringBuilder();
+                    String col = color.getText().toString().trim();
+                    String fil = filling.getText().toString().trim();
+                    String th = thickness.getText().toString().trim();
+                    String ps = pointSize.getText().toString().trim();
+                    String lab = selected(label);
+
+                    for (String name : checkedNames) {
+                        if (!col.isEmpty()) {
+                            script.append("SetColor(").append(name).append(",")
+                                    .append(JSONObject.quote(col)).append(")\n");
+                        }
+                        if (!fil.isEmpty()) {
+                            script.append("SetFilling(").append(name).append(",").append(fil).append(")\n");
+                        }
+                        if (!th.isEmpty()) {
+                            script.append("SetLineThickness(").append(name).append(",").append(th).append(")\n");
+                        }
+                        if (!ps.isEmpty()) {
+                            script.append("SetPointSize(").append(name).append(",").append(ps).append(")\n");
+                        }
+                        if (!"keep".equals(lab)) {
+                            script.append("ShowLabel(").append(name).append(",").append(lab).append(")\n");
+                        }
+                    }
+                    if (script.length() == 0) {
+                        toast("没有填写任何属性，未做修改");
+                        return;
+                    }
+                    runGgbScriptAndRefresh(script.toString(), after);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    // ------------------------------------------------------------------
     // LLM agent chat
     // ------------------------------------------------------------------
 
@@ -1089,6 +1352,23 @@ public class MainActivity extends Activity {
         chatListView = new ListView(this);
         chatAdapter = new ChatAdapter(currentChatSession);
         chatListView.setAdapter(chatAdapter);
+        chatPinnedToBottom = true;
+        chatListView.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override
+            public void onScrollStateChanged(AbsListView view, int scrollState) {
+            }
+
+            @Override
+            public void onScroll(AbsListView view, int firstVisibleItem, int visibleItemCount, int totalItemCount) {
+                if (totalItemCount == 0) {
+                    chatPinnedToBottom = true;
+                } else if (firstVisibleItem + visibleItemCount >= totalItemCount - 1) {
+                    chatPinnedToBottom = true;
+                } else {
+                    chatPinnedToBottom = false;
+                }
+            }
+        });
         chatListView.setOnItemClickListener((parent, view, position, id) -> {
             Object item = chatAdapter.getItem(position);
             if (!(item instanceof ChatMessage)) return;
@@ -1169,7 +1449,7 @@ public class MainActivity extends Activity {
         chatDialog.getWindow().setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         chatDialog.show();
-        scrollChatToBottom();
+        forceScrollChatToBottom();
     }
 
     private void createNewChatSession() {
@@ -1187,7 +1467,7 @@ public class MainActivity extends Activity {
         chatSessionTitleView.setText(s.title);
         updateThinkingHeader();
         saveChatSessions();
-        scrollChatToBottom();
+        forceScrollChatToBottom();
     }
 
     private void showSessionListDialog() {
@@ -1215,7 +1495,7 @@ public class MainActivity extends Activity {
                                     chatSessionTitleView.setText(s.title);
                                     updateThinkingHeader();
                                     saveChatSessions();
-                                    scrollChatToBottom();
+                                    forceScrollChatToBottom();
                                 } else if (op == 1) {
                                     final EditText et = new EditText(this);
                                     et.setText(s.title);
@@ -1267,25 +1547,41 @@ public class MainActivity extends Activity {
         if (session == null) return;
         ChatMessage m = new ChatMessage(role, text);
         session.messages.add(m);
-        mainHandler.post(() -> {
-            if (chatAdapter != null && currentChatSession == session) {
-                chatAdapter.notifyDataSetChanged();
-                scrollChatToBottom();
-            }
-        });
+        if ("user".equals(role)) {
+            // A message the user just sent should always bring the list to the bottom.
+            chatPinnedToBottom = true;
+        }
+        scheduleChatRefresh();
         saveChatSessions();
     }
 
     private void updateChatMessage(ChatMessage m, String newText) {
         if (m == null) return;
         m.text = newText;
-        mainHandler.post(() -> {
-            if (chatAdapter != null) chatAdapter.notifyDataSetChanged();
-            scrollChatToBottom();
-        });
+        scheduleChatRefresh();
     }
 
+    /** Throttled UI refresh: streaming deltas only re-layout at most every 200 ms. */
+    private void scheduleChatRefresh() {
+        if (chatRefreshScheduled) return;
+        chatRefreshScheduled = true;
+        mainHandler.postDelayed(chatRefreshRunnable, 200);
+    }
+
+    /**
+     * Only auto-scroll while the user is already pinned to the bottom. When
+     * the user scrolls up to read thinking text, new streaming output must not
+     * yank the list back down.
+     */
     private void scrollChatToBottom() {
+        if (!chatPinnedToBottom) return;
+        if (chatListView != null && chatAdapter != null && chatAdapter.getCount() > 0) {
+            chatListView.setSelection(chatAdapter.getCount() - 1);
+        }
+    }
+
+    private void forceScrollChatToBottom() {
+        chatPinnedToBottom = true;
         if (chatListView != null && chatAdapter != null && chatAdapter.getCount() > 0) {
             chatListView.setSelection(chatAdapter.getCount() - 1);
         }
@@ -1704,12 +2000,10 @@ public class MainActivity extends Activity {
                 final ChatMessage assistantMsg = currentAssistantMessage;
                 session.messages.add(thinkingMsg);
                 session.messages.add(assistantMsg);
-                mainHandler.post(() -> {
-                    if (currentChatSession == session) {
-                        chatAdapter.notifyDataSetChanged();
-                        scrollChatToBottom();
-                    }
-                });
+                if (currentChatSession == session) {
+                    chatPinnedToBottom = true;
+                    scheduleChatRefresh();
+                }
 
                 final StringBuilder reasoningBuf = new StringBuilder();
                 final StringBuilder contentBuf = new StringBuilder();
@@ -1750,11 +2044,9 @@ public class MainActivity extends Activity {
 
                 // Remove an empty thinking placeholder (models without reasoning).
                 if (reasoning.trim().isEmpty() && session.messages.remove(thinkingMsg)) {
-                    mainHandler.post(() -> {
-                        if (currentChatSession == session) {
-                            chatAdapter.notifyDataSetChanged();
-                        }
-                    });
+                    if (currentChatSession == session) {
+                        scheduleChatRefresh();
+                    }
                 } else {
                     updateChatMessage(thinkingMsg, reasoning);
                 }
