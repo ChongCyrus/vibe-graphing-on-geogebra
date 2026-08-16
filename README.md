@@ -71,11 +71,17 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | 搜索 | 打开 GeoGebra 搜索 |
 | 新建 | 新建作图（`ggbApplet.reset()`） |
 | 打开 | 从系统文件选择器打开 `.ggb` 文件 |
-| 保存 | 将当前作图保存为 `.ggb` |
+| 保存 | 保存到当前已打开/已保存的 `.ggb`（若无则走“另存为”） |
+| 另存为 | 将当前作图另存为新的 `.ggb` 文件 |
 | SVG  | 将当前绘图导出为 SVG 文件 |
 | PNG  | 将当前绘图导出为 PNG 文件 |
 | TikZ | 将当前绘图转换为 TikZ 代码块（弹出预览，可复制/保存） |
+| LaTeX | 输入常见 LaTeX 公式，转换为 GeoGebra 命令并执行 |
+| 脚本 | 执行多行 GGB 命令脚本或页面内 JavaScript |
 | 设置 | 界面语言、TikZ 输出模式/单位/缩放/小数位/箭头等 |
+
+代数输入框支持使用手机系统输入法输入；同时可用 LaTeX 按钮输入公式。
+完整脚本/API 文档见 `SKILL.md`。
 
 撤销/重做保持 GeoGebra 原始箭头图标，固定在右下角缩放按钮组（home 按钮）上方。
 
