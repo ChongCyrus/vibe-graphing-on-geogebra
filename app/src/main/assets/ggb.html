@@ -18,6 +18,36 @@
         height: 100%;
         display: block;
     }
+
+    /*
+     * Android phone layout fix.
+     *
+     * GeoGebra's mobile toolbar puts undo/redo/search/menu (rightButtonPanel)
+     * and the drawing toolbar (toolBPanel) into the same 53px row, and the
+     * toolbar width is computed as if the right buttons still took space.
+     * The Android app supplies native undo/redo/search/menu buttons in its own
+     * top bar, so we move the GeoGebra ones off-screen and let the drawing
+     * toolbar use the full row width. The 53px panel height and the menu
+     * dropdown position (top:53px) are left untouched.
+     */
+    .GeoGebraFrame .toolbarPanel .rightButtonPanel,
+    .GeoGebraFrame .toolbarPanel .rightButtonPanelMobile {
+        position: absolute !important;
+        top: -9999px !important;
+        left: -9999px !important;
+        right: auto !important;
+        width: 1px !important;
+        height: 1px !important;
+        overflow: hidden !important;
+        margin: 0 !important;
+    }
+
+    .GeoGebraFrame .toolbarPanel .toolBPanel,
+    .GeoGebraFrame .toolbarPanel .toolBPanelMobile {
+        float: none !important;
+        clear: both;
+        width: 100% !important;
+    }
 </style>
 </head>
 <body>
@@ -168,8 +198,11 @@
     window.__ggbGetSvg = function (cbId) {
         if (!requireApi(cbId)) return;
         try {
-            api.getSVGBase64(function (b64) {
-                ok(cbId, b64 || "");
+            // The exported Classic 5 API has exportSVG(callback) where the
+            // callback receives the SVG source directly (there is no
+            // getSVGBase64 in this build).
+            api.exportSVG(function (svgText) {
+                ok(cbId, svgText || "");
             });
         } catch (e) {
             fail(cbId, e.message);
@@ -242,6 +275,43 @@
         }
     };
 
+    window.__ggbUndo = function () {
+        if (api && typeof api.undo === "function") {
+            api.undo();
+            return true;
+        }
+        return false;
+    };
+
+    window.__ggbRedo = function () {
+        if (api && typeof api.redo === "function") {
+            api.redo();
+            return true;
+        }
+        return false;
+    };
+
+    // The native Android top bar owns undo/redo/search/menu. The GeoGebra
+    // rightButtonPanel is moved off-screen by CSS, but its buttons are still
+    // in the DOM and remain clickable programmatically.
+    // Normal child order in rightButtonPanel: undo, redo, search, menu.
+    window.__ggbClickRightButton = function (role) {
+        var rbp = document.querySelector(".rightButtonPanel");
+        if (!rbp) return false;
+        var kids = rbp.children;
+        var idx = -1;
+        if (role === "menu") {
+            idx = kids.length >= 4 ? 3 : kids.length >= 3 ? 2 : -1;
+        } else if (role === "search") {
+            idx = kids.length >= 4 ? 2 : -1;
+        }
+        if (idx >= 0 && kids[idx]) {
+            kids[idx].click();
+            return true;
+        }
+        return false;
+    };
+
     window.__ggbGetTikz = function (cbId, settingsJson) {
         if (!requireApi(cbId)) return;
         try {
@@ -257,9 +327,8 @@
                 return s;
             }
 
-            api.getSVGBase64(function (b64) {
+            api.exportSVG(function (svgText) {
                 try {
-                    var svgText = b64ToUtf8(b64);
                     if (!svgText || svgText.indexOf("<svg") === -1) {
                         fail(cbId, "GeoGebra returned no SVG content. Draw something first.");
                         return;

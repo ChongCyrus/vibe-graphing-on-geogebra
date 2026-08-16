@@ -5,6 +5,18 @@
     android:orientation="vertical"
     android:background="#ffffff">
 
+    <!-- Fixed row: undo/redo (must always stay visible) plus GeoGebra
+         search and menu buttons. The GeoGebra counterparts inside the
+         WebView are moved off-screen by CSS so the drawing toolbar can
+         use its own full row. -->
+    <LinearLayout
+        android:id="@+id/fixed_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#f5f5f5"
+        android:padding="4dp" />
+
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

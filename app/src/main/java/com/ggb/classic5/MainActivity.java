@@ -235,6 +235,16 @@ public class MainActivity extends Activity {
     }
 
     private void buildToolbar() {
+        LinearLayout fixedBar = findViewById(R.id.fixed_bar);
+        String[] fixedLabels = {"撤销", "重做", "菜单", "搜索"};
+        Runnable[] fixedActions = {
+                this::undo,
+                this::redo,
+                this::openGgbMenu,
+                this::openGgbSearch
+        };
+        addButtons(fixedBar, fixedLabels, fixedActions);
+
         LinearLayout toolbar = findViewById(R.id.toolbar);
         String[] labels = {"新建", "打开", "保存", "SVG", "PNG", "TikZ", "设置"};
         Runnable[] actions = {
@@ -246,23 +256,42 @@ public class MainActivity extends Activity {
                 this::exportTikz,
                 this::showSettingsDialog
         };
+        addButtons(toolbar, labels, actions);
+    }
 
+    private void addButtons(LinearLayout container, String[] labels, Runnable[] actions) {
         for (int i = 0; i < labels.length; i++) {
             Button btn = new Button(this);
             btn.setText(labels[i]);
             btn.setAllCaps(false);
             btn.setMinHeight(0);
             btn.setMinimumHeight(0);
-            btn.setPadding(16, 4, 16, 4);
+            btn.setPadding(14, 4, 14, 4);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(4, 4, 4, 4);
+            lp.setMargins(3, 3, 3, 3);
             btn.setLayoutParams(lp);
             final Runnable action = actions[i];
             btn.setOnClickListener(v -> action.run());
-            toolbar.addView(btn);
+            container.addView(btn);
         }
+    }
+
+    private void undo() {
+        webView.evaluateJavascript("window.__ggbUndo && window.__ggbUndo();", null);
+    }
+
+    private void redo() {
+        webView.evaluateJavascript("window.__ggbRedo && window.__ggbRedo();", null);
+    }
+
+    private void openGgbMenu() {
+        webView.evaluateJavascript("window.__ggbClickRightButton && window.__ggbClickRightButton('menu');", null);
+    }
+
+    private void openGgbSearch() {
+        webView.evaluateJavascript("window.__ggbClickRightButton && window.__ggbClickRightButton('search');", null);
     }
 
     // ------------------------------------------------------------------
@@ -410,7 +439,8 @@ public class MainActivity extends Activity {
                 toast("SVG 导出失败: " + error);
                 return;
             }
-            String svg = b64ToUtf8(payload);
+            // exportSVG(callback) now returns the SVG source directly.
+            String svg = payload;
             if (svg == null || !svg.contains("<svg")) {
                 setStatus("SVG 导出失败: 未返回 SVG 内容");
                 toast("GeoGebra 未返回 SVG 内容。请先绘制图形。");
