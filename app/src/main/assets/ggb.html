@@ -495,7 +495,7 @@
 
     installDrawingTapGuard();
 
-    // ---------- search field: use the system IME instead of GeoGebra's keyboard ----------
+    // ---------- native IME for search field and algebra input ----------
     var lastSearchQuery = "";
     var returnToSearchAfterMaterial = false;
 
@@ -503,28 +503,48 @@
         return document.querySelector(".searchBar input, .searchBar textarea");
     }
 
-    function makeSearchInputEditable() {
-        var input = currentSearchInput();
-        if (!input) return;
-        try {
-            input.readOnly = false;
-            input.removeAttribute("readonly");
-        } catch (err) {
-            // ignore
-        }
-        var wrapper = input.closest(".searchInputField") || input.parentElement;
-        if (wrapper) {
-            wrapper.classList.remove("withCursorOverlay");
+    function allNativeEditableInputs() {
+        return document.querySelectorAll(
+                ".searchBar input, .searchBar textarea,"
+                + " .AlgebraInput .AutoCompleteTextFieldW input,"
+                + " .AlgebraInput .AutoCompleteTextFieldW textarea");
+    }
+
+    function isNativeEditableTarget(target) {
+        if (!target || !target.closest) return false;
+        return !!(target.closest(".searchBar")
+                || target.closest(".AlgebraInput .AutoCompleteTextFieldW"));
+    }
+
+    function makeNativeInputsEditable() {
+        var inputs = allNativeEditableInputs();
+        for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            try {
+                input.readOnly = false;
+                input.removeAttribute("readonly");
+            } catch (err) {
+                // ignore
+            }
+            var wrapper = input.closest(".searchInputField")
+                    || input.closest(".AutoCompleteTextFieldW")
+                    || input.parentElement;
+            if (wrapper) {
+                wrapper.classList.remove("withCursorOverlay");
+            }
         }
     }
 
-    // GeoGebra creates the search field as a readonly native input and shows
-    // its own keyboard. Make the native input editable again before focus.
+    function makeSearchInputEditable() {
+        makeNativeInputsEditable();
+    }
+
+    // GeoGebra creates these fields as readonly native inputs and shows its
+    // own keyboard. Make the native input editable again before focus.
     document.addEventListener("touchstart", function (event) {
         var target = event.target;
-        if (target && target.nodeType === 1 && target.closest
-                && target.closest(".searchBar")) {
-            makeSearchInputEditable();
+        if (isNativeEditableTarget(target)) {
+            makeNativeInputsEditable();
             // Do not let GeoGebra's own touchstart handler prevent native focus.
             event.stopPropagation();
         }
@@ -532,17 +552,15 @@
 
     document.addEventListener("pointerdown", function (event) {
         var target = event.target;
-        if (target && target.nodeType === 1 && target.closest
-                && target.closest(".searchBar")) {
-            makeSearchInputEditable();
+        if (isNativeEditableTarget(target)) {
+            makeNativeInputsEditable();
         }
     }, true);
 
     document.addEventListener("focus", function (event) {
         var target = event.target;
-        if (target && target.nodeType === 1 && target.closest
-                && target.closest(".searchBar")) {
-            makeSearchInputEditable();
+        if (isNativeEditableTarget(target)) {
+            makeNativeInputsEditable();
             // Stop GWT's own focus handler (which would open GeoGebra's
             // on-screen keyboard). The input is still focused natively, so
             // Android shows the default IME.
@@ -559,9 +577,20 @@
         }
     }, true);
 
+    // Record "open material from search" for the in-app back button. This also
+    // covers the three-dot context menu items ("编辑"/"查看") that are not
+    // inside .materialCard.
     document.addEventListener("click", function (e) {
         var target = e.target;
-        if (target && target.closest && target.closest(".materialCard")) {
+        if (!target || !target.closest) return;
+
+        var materialCardClick = target.closest(".materialCard");
+        var menuItem = target.closest("[role=\"menuitem\"], .gwt-MenuItem, .menuItem, li");
+        var menuText = menuItem ? (menuItem.textContent || "").trim() : "";
+        var isOpenAction = menuText === "查看" || menuText === "编辑"
+                || menuText === "View" || menuText === "Edit";
+
+        if (materialCardClick || isOpenAction) {
             var input = currentSearchInput();
             if (input) {
                 lastSearchQuery = input.value || lastSearchQuery;
@@ -619,6 +648,69 @@
 
         // Main drawing page: nothing to go back to; do nothing.
         return true;
+    };
+
+    // ---------- LaTeX -> GeoGebra command translation ----------
+    function latexToGgb(latex) {
+        var s = String(latex || "");
+        s = s.replace(/\\left/g, "").replace(/\\right/g, "");
+        s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, "(($1)/($2))");
+        s = s.replace(/\\dfrac\{([^{}]*)\}\{([^{}]*)\}/g, "(($1)/($2))");
+        s = s.replace(/\\sqrt\s*\{([^{}]*)\}/g, "sqrt($1)");
+        s = s.replace(/\\sqrt/g, "sqrt");
+        s = s.replace(/\\cdot/g, "*").replace(/\\times/g, "*").replace(/\\div/g, "/");
+        s = s.replace(/\\le/g, "<=").replace(/\\ge/g, ">=").replace(/\\ne/g, "!=");
+        s = s.replace(/\\leq/g, "<=").replace(/\\geq/g, ">=").replace(/\\neq/g, "!=");
+        s = s.replace(/\\infty/g, "infinity");
+        s = s.replace(/\\pm/g, "±").replace(/\\mp/g, "∓");
+
+        var greek = {
+            alpha: "alpha", beta: "beta", gamma: "gamma", delta: "delta",
+            epsilon: "epsilon", zeta: "zeta", eta: "eta", theta: "theta",
+            iota: "iota", kappa: "kappa", lambda: "lambda", mu: "mu",
+            nu: "nu", xi: "xi", pi: "pi", rho: "rho", sigma: "sigma",
+            tau: "tau", upsilon: "upsilon", phi: "phi", chi: "chi",
+            psi: "psi", omega: "omega"
+        };
+        for (var name in greek) {
+            if (greek.hasOwnProperty(name)) {
+                var re = new RegExp("\\\\" + name + "(?![a-zA-Z])", "g");
+                s = s.replace(re, greek[name]);
+            }
+        }
+
+        s = s.replace(/\\(sin|cos|tan|cot|sec|csc|arcsin|arccos|arctan|sinh|cosh|tanh|ln|log|exp|abs|floor|ceil|min|max)(?![a-zA-Z])/g, "$1");
+        s = s.replace(/\\([a-zA-Z]+)/g, "$1");
+        s = s.replace(/\{/g, "(").replace(/\}/g, ")");
+        return s;
+    }
+
+    window.__ggbEvalLaTeX = function (latex) {
+        if (!api || typeof api.evalCommand !== "function") return false;
+        var cmd = latexToGgb(latex);
+        if (!cmd.trim()) return false;
+        try {
+            return api.evalCommand(cmd);
+        } catch (e) {
+            return false;
+        }
+    };
+
+    window.__ggbRunGgbScript = function (script) {
+        if (!api || typeof api.evalCommand !== "function") return false;
+        var lines = String(script || "").split(/\r?\n/);
+        var executed = 0;
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            try {
+                api.evalCommand(line);
+                executed++;
+            } catch (e) {
+                // continue with the next command
+            }
+        }
+        return executed > 0;
     };
 
     // ---------- helpers for Android ----------

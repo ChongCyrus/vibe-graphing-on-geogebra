@@ -82,6 +82,8 @@ public class MainActivity extends Activity {
     private final AtomicInteger requestCounter = new AtomicInteger();
 
     private PendingWrite pendingWrite;
+    private boolean pendingWriteIsGgbSave = false;
+    private Uri currentGgbUri = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -232,6 +234,9 @@ public class MainActivity extends Activity {
 
         setStatus("正在加载 GeoGebra Classic 5（离线）…");
         webView.loadUrl(b.build().toString());
+        // The applet page is always the base page; a fresh reload must not
+        // leave old applet copies in the WebView history.
+        webView.clearHistory();
     }
 
     private void buildToolbar() {
@@ -242,21 +247,24 @@ public class MainActivity extends Activity {
         LinearLayout fixedBar = findViewById(R.id.fixed_bar);
         String[] fixedLabels = {"返回", "菜单", "搜索"};
         Runnable[] fixedActions = {
-                this::backToSearch,
+                this::back,
                 this::openGgbMenu,
                 this::openGgbSearch
         };
         addButtons(fixedBar, fixedLabels, fixedActions);
 
         LinearLayout toolbar = findViewById(R.id.toolbar);
-        String[] labels = {"新建", "打开", "保存", "SVG", "PNG", "TikZ", "设置"};
+        String[] labels = {"新建", "打开", "保存", "另存为", "SVG", "PNG", "TikZ", "LaTeX", "脚本", "设置"};
         Runnable[] actions = {
                 this::newConstruction,
                 this::openGgb,
                 this::saveGgb,
+                this::saveGgbAs,
                 this::exportSvg,
                 this::exportPng,
                 this::exportTikz,
+                this::showLatexDialog,
+                this::showScriptDialog,
                 this::showSettingsDialog
         };
         addButtons(toolbar, labels, actions);
@@ -283,7 +291,14 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void backToSearch() {
+    private void back() {
+        // If the WebView itself navigated (e.g. a material page opened in the
+        // same WebView), a browser-style back is the correct "previous page".
+        if (webView.canGoBack()) {
+            webView.goBack();
+            return;
+        }
+        // Otherwise let the in-app page stack (main / search / material) go back.
         evalJsBool("(window.__ggbBack ? window.__ggbBack() : false)",
                 "返回不可用");
     }
@@ -380,13 +395,17 @@ public class MainActivity extends Activity {
 
     private void newConstruction() {
         webView.evaluateJavascript("window.__ggbReset();", null);
+        currentGgbUri = null;
         setStatus("已新建作图");
     }
 
     private void openGgb() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("*/*");
+                .setType("*/*")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         try {
             startActivityForResult(intent, REQ_OPEN_GGB);
         } catch (Exception e) {
@@ -427,6 +446,28 @@ public class MainActivity extends Activity {
     }
 
     private void saveGgb() {
+        if (currentGgbUri == null) {
+            saveGgbAs();
+            return;
+        }
+        setStatus("正在保存 .ggb…");
+        callWithId("window.__ggbGetGgb('__ID__')", 90000, (ok, payload, error) -> {
+            if (!ok) {
+                setStatus(".ggb 保存失败: " + error);
+                toast(".ggb 保存失败: " + error);
+                return;
+            }
+            byte[] bytes = b64ToBytes(payload);
+            if (bytes == null || bytes.length == 0) {
+                toast("GeoGebra 返回了空的 .ggb 数据");
+                return;
+            }
+            setStatus("正在写入当前 .ggb 文件…");
+            writePending(currentGgbUri, new PendingWrite("application/octet-stream", bytes));
+        });
+    }
+
+    private void saveGgbAs() {
         setStatus("正在导出 .ggb…");
         callWithId("window.__ggbGetGgb('__ID__')", 90000, (ok, payload, error) -> {
             if (!ok) {
@@ -440,7 +481,7 @@ public class MainActivity extends Activity {
                 return;
             }
             setStatus("已生成 .ggb，请选择保存位置");
-            saveBytes("GeoGebra-" + stamp() + ".ggb", "application/octet-stream", bytes);
+            saveBytesAsCurrentGgb("GeoGebra-" + stamp() + ".ggb", "application/octet-stream", bytes);
         });
     }
 
@@ -633,6 +674,108 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private void showLatexDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(24, 16, 24, 16);
+        scroll.addView(panel, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView tv = new TextView(this);
+        tv.setText("输入 LaTeX 公式，将转换为 GeoGebra 命令并执行。\n"
+                + "例如：\\frac{1}{2} + \\sqrt{x}，x^2 + \\sin(x)");
+        tv.setPadding(0, 8, 0, 8);
+        panel.addView(tv);
+
+        EditText input = new EditText(this);
+        input.setHint("\\frac{a}{b} \\cdot \\sqrt{x}");
+        input.setSingleLine(false);
+        input.setMinLines(2);
+        panel.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        new AlertDialog.Builder(this)
+                .setTitle("LaTeX → GeoGebra")
+                .setView(scroll)
+                .setPositiveButton("执行", (d, w) -> {
+                    String latex = input.getText().toString().trim();
+                    if (latex.isEmpty()) {
+                        toast("请输入 LaTeX 内容");
+                        return;
+                    }
+                    evalJsBool("(window.__ggbEvalLaTeX ? window.__ggbEvalLaTeX("
+                            + JSONObject.quote(latex) + ") : false)",
+                            "LaTeX 执行失败（GeoGebra 未就绪）");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showScriptDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(24, 16, 24, 16);
+        scroll.addView(panel, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Spinner mode = spinner(panel, "脚本类型",
+                new String[]{"ggb", "js"},
+                new String[]{"GGB 命令脚本（每行一条 GeoGebra 命令）", "JavaScript（可调用 window.ggbApi）"},
+                "ggb");
+
+        EditText input = new EditText(this);
+        input.setHint("A=(1,2)\nB=(3,4)\nf(x)=x^2");
+        input.setSingleLine(false);
+        input.setMinLines(4);
+        input.setHorizontallyScrolling(false);
+        panel.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        new AlertDialog.Builder(this)
+                .setTitle("脚本执行")
+                .setView(scroll)
+                .setPositiveButton("执行", (d, w) -> {
+                    String script = input.getText().toString();
+                    if (script.trim().isEmpty()) {
+                        toast("请输入脚本内容");
+                        return;
+                    }
+                    if ("js".equals(selected(mode))) {
+                        webView.evaluateJavascript(script, value ->
+                                showScriptResult(value == null ? "undefined" : value));
+                    } else {
+                        evalJsBool("(window.__ggbRunGgbScript ? window.__ggbRunGgbScript("
+                                + JSONObject.quote(script) + ") : false)",
+                                "GGB 脚本执行失败（GeoGebra 未就绪）");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showScriptResult(String value) {
+        ScrollView scroll = new ScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setTextIsSelectable(true);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setPadding(24, 24, 24, 24);
+        tv.setText(value);
+        scroll.addView(tv, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        new AlertDialog.Builder(this)
+                .setTitle("JavaScript 返回")
+                .setView(scroll)
+                .setPositiveButton("关闭", null)
+                .show();
+    }
+
     private Spinner spinner(LinearLayout panel, String label, String[] values, String[] labels, String current) {
         TextView tv = new TextView(this);
         tv.setText(label);
@@ -718,8 +861,12 @@ public class MainActivity extends Activity {
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE)
                 .setType(mime)
-                .putExtra(Intent.EXTRA_TITLE, suggestedName);
+                .putExtra(Intent.EXTRA_TITLE, suggestedName)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         pendingWrite = new PendingWrite(mime, data);
+        pendingWriteIsGgbSave = false;
         try {
             startActivityForResult(intent, REQ_CREATE_EXPORT);
         } catch (Exception e) {
@@ -728,10 +875,33 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void saveBytesAsCurrentGgb(String suggestedName, String mime, byte[] data) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(mime)
+                .putExtra(Intent.EXTRA_TITLE, suggestedName)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        pendingWrite = new PendingWrite(mime, data);
+        pendingWriteIsGgbSave = true;
+        try {
+            startActivityForResult(intent, REQ_CREATE_EXPORT);
+        } catch (Exception e) {
+            pendingWrite = null;
+            pendingWriteIsGgbSave = false;
+            toast("无法打开保存对话框: " + e.getMessage());
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK) {
+            if (requestCode == REQ_CREATE_EXPORT) {
+                pendingWrite = null;
+                pendingWriteIsGgbSave = false;
+            }
             return;
         }
 
@@ -744,9 +914,15 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_CREATE_EXPORT && data != null && data.getData() != null) {
             Uri uri = data.getData();
             PendingWrite write = pendingWrite;
+            boolean setAsCurrentGgb = pendingWriteIsGgbSave;
             pendingWrite = null;
+            pendingWriteIsGgbSave = false;
             if (write == null) {
                 return;
+            }
+            if (setAsCurrentGgb) {
+                currentGgbUri = uri;
+                takePersistablePermission(uri);
             }
             writePending(uri, write);
         }
@@ -757,7 +933,11 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 byte[] bytes = readUri(uri, MAX_GGB_BYTES);
-                mainHandler.post(() -> loadGgbBytes(bytes));
+                mainHandler.post(() -> {
+                    currentGgbUri = uri;
+                    takePersistablePermission(uri);
+                    loadGgbBytes(bytes);
+                });
             } catch (Exception e) {
                 String msg = e.getMessage();
                 mainHandler.post(() -> {
@@ -792,6 +972,16 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    private void takePersistablePermission(Uri uri) {
+        try {
+            getContentResolver().takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Exception e) {
+            // Some providers do not support persistable permissions; ignore.
+        }
     }
 
     private byte[] readUri(Uri uri, int maxBytes) throws Exception {
