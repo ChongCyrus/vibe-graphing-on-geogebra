@@ -295,10 +295,16 @@
     //     pointerdown and let the pinch go through natively; restore the
     //     drawing tool when the pinch ends
     function currentMode() {
+        if (window.ggbApi && typeof window.ggbApi.getMode === "function") {
+            try {
+                var m = window.ggbApi.getMode();
+                if (typeof m === "number" && !isNaN(m)) return m;
+            } catch (e) {}
+        }
         var btn = document.querySelector(".toolbarPanel .toolbar_button[isSelected=\"true\"]");
         if (!btn) return -1;
-        var m = parseInt(btn.getAttribute("mode"), 10);
-        return isNaN(m) ? -1 : m;
+        var mode = parseInt(btn.getAttribute("mode"), 10);
+        return isNaN(mode) ? -1 : mode;
     }
 
     function isTapOnlyMode(mode) {
