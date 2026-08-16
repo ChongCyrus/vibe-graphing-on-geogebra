@@ -197,7 +197,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **本项目自身代码**：GPL-3.0（因包含 GPL-3.0 的 svg2tikz 代码），见 [`LICENSE`](LICENSE)
 - **GeoGebra Classic 5 应用包**：版权归 GeoGebra GmbH，按 GeoGebra 官方许可使用
   （EUPL-1.2；整体软件包仅限非商业使用），见 <https://www.geogebra.org/license>
-- **obsidian-svg2tikz**：GPL-3.0
+- **svg2tikz、obsidian-svg2tikz**：GPL-3.0
 - 更多第三方组件说明见 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)
 
 > 请勿将本应用用于任何商业用途，除非你已另行取得 GeoGebra 官方的商业授权。
