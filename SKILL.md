@@ -37,6 +37,9 @@ Android 侧通过 `webView.evaluateJavascript(...)` 调用 `window.__ggb*` 函�
 | `window.__ggbEvalCommand(cmd)` | GeoGebra 命令字符串 | boolean | 执行单条 GeoGebra 命令 |
 | `window.__ggbEvalLaTeX(latex)` | LaTeX 字符串 | boolean | 将常见 LaTeX 转为 GeoGebra 命令并执行 |
 | `window.__ggbRunGgbScript(script)` | 多行 GeoGebra 命令（每行一条） | boolean | 逐行执行 GGB 脚本；至少执行一条返回 true |
+| `window.__ggbRunGgbScriptWithLog(script)` | 多行 GeoGebra 命令 | JSON 字符串 | 逐行执行并返回每行 `{line,ok,error}` 日志 |
+| `window.__ggbRunJsScript(script)` | JavaScript 代码 | 字符串 | 在页面上下文执行 JS 并返回结果 |
+| `window.__ggbGetSnapshot()` | 无 | JSON 字符串 | 当前作图快照：对象数量/名称/类型/当前模式 |
 | `window.__ggbGetTikz(cbId, settingsJson)` | callback id + TikZ 设置 JSON | 回调 | 当前绘图转 TikZ 代码块 |
 | `window.__ggbBack()` | 无 | boolean | 应用内返回：搜索页关闭 / 材料页返回搜索 / 主页面无操作 |
 | `window.__ggbClickRightButton(role)` | `"menu"` 或 `"search"` | boolean | 触发 GeoGebra 菜单/搜索 |
@@ -202,8 +205,9 @@ LLM 生成脚本时，应保证每行可独立被 `ggbApi.evalCommand` 执行。
 - `done`：任务完成，停止循环
 
 工具结果会自动回传给模型，包括：每条命令是否成功、错误信息、当前作图快照
-（对象数量、对象名、对象类型、当前模式）。用户可在聊天框中选择“显示思考链”查看
-每轮模型的完整输出。
+（对象数量、对象名、对象类型、当前模式）。模型输出以 SSE 流式传输，用户可实时
+查看思考链与回答；点击聊天窗口顶部的“思考链”条可显示/隐藏思考链。会话会持久化
+保存在本地，支持新建/切换/重命名/删除会话，首个会话标题由模型自动生成。
 
 ## 10. 已知限制
 

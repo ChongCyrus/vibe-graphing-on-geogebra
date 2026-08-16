@@ -2,11 +2,13 @@ package com.ggb.classic5;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.AssetManager;
+import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
@@ -14,6 +16,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
@@ -21,7 +24,9 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -38,6 +43,9 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -51,6 +59,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -97,6 +106,18 @@ public class MainActivity extends Activity {
     private PendingWrite pendingWrite;
     private boolean pendingWriteIsGgbSave = false;
     private Uri currentGgbUri = null;
+
+    // LLM chat sessions
+    private final ArrayList<ChatSession> chatSessions = new ArrayList<>();
+    private ChatSession currentChatSession;
+    private ChatMessage currentAssistantMessage;
+    private ChatMessage currentThinkingMessage;
+    private ChatAdapter chatAdapter;
+    private ListView chatListView;
+    private TextView chatSessionTitleView;
+    private AtomicBoolean chatRunning = new AtomicBoolean(false);
+    private AtomicBoolean chatStopped = new AtomicBoolean(false);
+    private Dialog chatDialog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -804,74 +825,286 @@ public class MainActivity extends Activity {
             + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true。\n"
             + "4. 每轮只能输出一个 JSON 对象，不要输出多余文本。\n";
 
+    private static final String TITLE_PROMPT =
+            "你是会话命名助手。请根据用户需求，生成一个不超过 12 个汉字的会话标题。"
+            + "只输出标题文本，不要引号，不要解释。";
+
+    // ------------------------------------------------------------------
+    // Chat data model
+    // ------------------------------------------------------------------
+
+    private static class ChatMessage {
+        String role;   // user | assistant | thinking | system | tool
+        String text;
+
+        ChatMessage(String role, String text) {
+            this.role = role;
+            this.text = text;
+        }
+
+        JSONObject toJson() {
+            JSONObject o = new JSONObject();
+            try {
+                o.put("role", role);
+                o.put("text", text);
+            } catch (Exception ignored) {}
+            return o;
+        }
+
+        static ChatMessage fromJson(JSONObject o) {
+            return new ChatMessage(o.optString("role", "user"), o.optString("text", ""));
+        }
+    }
+
+    private static class ChatSession {
+        String id;
+        String title;
+        final ArrayList<ChatMessage> messages = new ArrayList<>();
+
+        ChatSession(String id, String title) {
+            this.id = id;
+            this.title = title;
+        }
+
+        JSONObject toJson() {
+            JSONObject o = new JSONObject();
+            JSONArray arr = new JSONArray();
+            try {
+                o.put("id", id);
+                o.put("title", title);
+                for (ChatMessage m : messages) {
+                    arr.put(m.toJson());
+                }
+                o.put("messages", arr);
+            } catch (Exception ignored) {}
+            return o;
+        }
+
+        static ChatSession fromJson(JSONObject o) {
+            ChatSession s = new ChatSession(o.optString("id", UUID.randomUUID().toString()),
+                    o.optString("title", "会话"));
+            JSONArray arr = o.optJSONArray("messages");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject mo = arr.optJSONObject(i);
+                    if (mo != null) {
+                        s.messages.add(ChatMessage.fromJson(mo));
+                    }
+                }
+            }
+            return s;
+        }
+    }
+
+    private class ChatAdapter extends BaseAdapter {
+        private final ChatSession session;
+        private boolean showThinking = true;
+
+        ChatAdapter(ChatSession session) {
+            this.session = session;
+        }
+
+        void setShowThinking(boolean show) {
+            showThinking = show;
+            notifyDataSetChanged();
+        }
+
+        private List<ChatMessage> visible() {
+            ArrayList<ChatMessage> out = new ArrayList<>();
+            for (ChatMessage m : session.messages) {
+                if (!showThinking && "thinking".equals(m.role)) continue;
+                out.add(m);
+            }
+            return out;
+        }
+
+        @Override
+        public int getCount() {
+            return visible().size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return visible().get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            ChatMessage m = visible().get(position);
+            TextView tv = (TextView) convertView;
+            if (tv == null) {
+                tv = new TextView(MainActivity.this);
+                tv.setTextSize(14);
+                tv.setPadding(18, 14, 18, 14);
+            }
+            tv.setText(m.text);
+            tv.setGravity(Gravity.START);
+            switch (m.role) {
+                case "user":
+                    tv.setBackgroundColor(Color.rgb(224, 232, 255));
+                    tv.setGravity(Gravity.END);
+                    break;
+                case "assistant":
+                    tv.setBackgroundColor(Color.rgb(255, 255, 255));
+                    break;
+                case "thinking":
+                    tv.setBackgroundColor(Color.rgb(255, 249, 225));
+                    tv.setTypeface(Typeface.MONOSPACE);
+                    tv.setTextSize(12);
+                    break;
+                case "tool":
+                    tv.setBackgroundColor(Color.rgb(240, 240, 240));
+                    tv.setTypeface(Typeface.MONOSPACE);
+                    tv.setTextSize(12);
+                    break;
+                default:
+                    tv.setBackgroundColor(Color.rgb(245, 245, 245));
+                    tv.setTypeface(Typeface.MONOSPACE);
+                    tv.setTextSize(12);
+                    break;
+            }
+            return tv;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Session persistence
+    // ------------------------------------------------------------------
+
+    private File chatSessionsFile() {
+        return new File(getFilesDir(), "llm_sessions.json");
+    }
+
+    private void loadChatSessions() {
+        File f = chatSessionsFile();
+        if (!f.exists()) return;
+        chatSessions.clear();
+        try (FileInputStream in = new FileInputStream(f);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                bos.write(buf, 0, n);
+            }
+            JSONArray arr = new JSONArray(new String(bos.toByteArray(), StandardCharsets.UTF_8));
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o != null) {
+                    chatSessions.add(ChatSession.fromJson(o));
+                }
+            }
+        } catch (Exception e) {
+            chatSessions.clear();
+        }
+    }
+
+    private synchronized void saveChatSessions() {
+        JSONArray arr = new JSONArray();
+        for (ChatSession s : chatSessions) {
+            arr.put(s.toJson());
+        }
+        try (FileOutputStream out = new FileOutputStream(chatSessionsFile())) {
+            out.write(arr.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {}
+    }
+
+    // ------------------------------------------------------------------
+    // LLM chat dialog
+    // ------------------------------------------------------------------
+
     private void showLlmChatDialog() {
+        loadChatSessions();
+        if (chatSessions.isEmpty()) {
+            ChatSession s = new ChatSession(UUID.randomUUID().toString(), "新会话");
+            chatSessions.add(s);
+        }
+        currentChatSession = chatSessions.get(0);
+        chatStopped.set(false);
+        chatRunning.set(false);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(12, 8, 12, 8);
+        root.setPadding(8, 8, 8, 8);
 
+        // top bar
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setPadding(0, 4, 0, 8);
+        top.setPadding(0, 4, 0, 4);
 
-        Button pauseBtn = new Button(this);
-        pauseBtn.setText("暂停");
-        pauseBtn.setAllCaps(false);
-
+        Button sessionsBtn = new Button(this);
+        sessionsBtn.setText("会话");
+        sessionsBtn.setAllCaps(false);
+        Button newBtn = new Button(this);
+        newBtn.setText("新会话");
+        newBtn.setAllCaps(false);
+        final Button stopBtn = new Button(this);
+        stopBtn.setText("停止");
+        stopBtn.setAllCaps(false);
         Button settingsBtn = new Button(this);
-        settingsBtn.setText("LLM 设置");
+        settingsBtn.setText("设置");
         settingsBtn.setAllCaps(false);
 
-        CheckBox showThinking = new CheckBox(this);
-        showThinking.setText("显示思考链");
-
-        top.addView(pauseBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        top.addView(settingsBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        top.addView(showThinking, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        top.addView(sessionsBtn);
+        top.addView(newBtn);
+        top.addView(stopBtn);
+        top.addView(settingsBtn);
         root.addView(top);
 
-        ListView listView = new ListView(this);
-        final ArrayList<String> messages = new ArrayList<>();
-        final ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_list_item_1, messages);
-        listView.setAdapter(adapter);
-        root.addView(listView, new LinearLayout.LayoutParams(
+        // thinking chain header (click to show/hide)
+        final TextView thinkingHeader = new TextView(this);
+        thinkingHeader.setText("思考链：显示（点击隐藏）");
+        thinkingHeader.setTextColor(Color.rgb(120, 90, 0));
+        thinkingHeader.setPadding(8, 6, 8, 6);
+        thinkingHeader.setBackgroundColor(Color.rgb(255, 249, 225));
+        thinkingHeader.setOnClickListener(v -> {
+            boolean show = !chatAdapter.showThinking;
+            chatAdapter.setShowThinking(show);
+            thinkingHeader.setText(show ? "思考链：显示（点击隐藏）" : "思考链：隐藏（点击显示）");
+        });
+        root.addView(thinkingHeader);
+
+        // session title
+        chatSessionTitleView = new TextView(this);
+        chatSessionTitleView.setText(currentChatSession.title);
+        chatSessionTitleView.setTextSize(16);
+        chatSessionTitleView.setPadding(8, 8, 8, 8);
+        chatSessionTitleView.setTextColor(Color.rgb(30, 30, 30));
+        root.addView(chatSessionTitleView);
+
+        // message list
+        chatListView = new ListView(this);
+        chatAdapter = new ChatAdapter(currentChatSession);
+        chatListView.setAdapter(chatAdapter);
+        root.addView(chatListView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
+        // input row
         LinearLayout inputRow = new LinearLayout(this);
         inputRow.setOrientation(LinearLayout.HORIZONTAL);
-        inputRow.setPadding(0, 8, 0, 0);
-
+        inputRow.setPadding(0, 6, 0, 0);
         final EditText input = new EditText(this);
         input.setHint("用自然语言描述你要画的图或要执行的操作…");
         input.setSingleLine(true);
         Button sendBtn = new Button(this);
         sendBtn.setText("发送");
         sendBtn.setAllCaps(false);
-
         inputRow.addView(input, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        inputRow.addView(sendBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        inputRow.addView(sendBtn);
         root.addView(inputRow);
 
-        final AtomicBoolean paused = new AtomicBoolean(false);
-        final AtomicBoolean running = new AtomicBoolean(false);
-
-        pauseBtn.setOnClickListener(v -> {
-            if (running.get()) {
-                paused.set(true);
-                pauseBtn.setText("暂停中");
-                appendLlmText(messages, adapter, listView, "[系统] 已请求暂停：本轮结束后停止。");
-            } else {
-                paused.set(false);
-                pauseBtn.setText("暂停");
-            }
-        });
-
+        sessionsBtn.setOnClickListener(v -> showSessionListDialog());
+        newBtn.setOnClickListener(v -> createNewChatSession());
         settingsBtn.setOnClickListener(v -> showLlmSettingsDialog());
+        stopBtn.setOnClickListener(v -> {
+            chatStopped.set(true);
+            appendChatMessage("system", "[系统] 已请求停止，当前轮结束后停止。");
+        });
 
         sendBtn.setOnClickListener(v -> {
             String text = input.getText().toString().trim();
@@ -879,36 +1112,142 @@ public class MainActivity extends Activity {
                 toast("请输入需求描述");
                 return;
             }
-            if (running.get()) {
-                toast("正在执行中，请先暂停或等待完成");
+            if (chatRunning.get()) {
+                toast("正在执行中，请先停止或等待完成");
                 return;
             }
             input.setText("");
-            appendLlmText(messages, adapter, listView, "用户: " + text);
-            paused.set(false);
-            running.set(true);
-            pauseBtn.setText("暂停");
-            new Thread(() -> runLlmAgent(text, messages, adapter, listView,
-                    showThinking, paused, running, pauseBtn)).start();
+            appendChatMessage("user", text);
+            chatStopped.set(false);
+            chatRunning.set(true);
+            stopBtn.setText("停止");
+            new Thread(() -> runLlmAgent(text)).start();
         });
 
+        chatDialog = new Dialog(this);
+        chatDialog.setContentView(root);
+        chatDialog.setCancelable(true);
+        chatDialog.setOnDismissListener(d -> {
+            chatStopped.set(true);
+            chatRunning.set(false);
+        });
+        chatDialog.getWindow().setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        chatDialog.show();
+        scrollChatToBottom();
+    }
+
+    private void createNewChatSession() {
+        ChatSession s = new ChatSession(UUID.randomUUID().toString(), "新会话");
+        chatSessions.add(0, s);
+        currentChatSession = s;
+        chatStopped.set(true);
+        chatRunning.set(false);
+        if (chatAdapter != null) {
+            chatAdapter.notifyDataSetChanged();
+        }
+        chatAdapter = new ChatAdapter(currentChatSession);
+        chatListView.setAdapter(chatAdapter);
+        chatSessionTitleView.setText(s.title);
+        saveChatSessions();
+        scrollChatToBottom();
+    }
+
+    private void showSessionListDialog() {
+        if (chatSessions.isEmpty()) return;
+        ArrayList<String> titles = new ArrayList<>();
+        for (ChatSession s : chatSessions) {
+            titles.add(s.title + (s == currentChatSession ? "（当前）" : ""));
+        }
+        final String[] arr = titles.toArray(new String[0]);
         new AlertDialog.Builder(this)
-                .setTitle("LLM 操作台（自然语言控制 GeoGebra）")
-                .setView(root)
-                .setNegativeButton("关闭", (d, w) -> {
-                    paused.set(true);
-                    running.set(false);
+                .setTitle("会话列表")
+                .setItems(arr, (d, which) -> {
+                    final ChatSession s = chatSessions.get(which);
+                    String[] ops = {"打开", "重命名", "删除"};
+                    new AlertDialog.Builder(this)
+                            .setTitle(s.title)
+                            .setItems(ops, (d2, op) -> {
+                                if (op == 0) {
+                                    chatStopped.set(true);
+                                    currentChatSession = s;
+                                    chatAdapter = new ChatAdapter(s);
+                                    chatListView.setAdapter(chatAdapter);
+                                    chatSessionTitleView.setText(s.title);
+                                    saveChatSessions();
+                                    scrollChatToBottom();
+                                } else if (op == 1) {
+                                    final EditText et = new EditText(this);
+                                    et.setText(s.title);
+                                    new AlertDialog.Builder(this)
+                                            .setTitle("重命名会话")
+                                            .setView(et)
+                                            .setPositiveButton("保存", (d3, w3) -> {
+                                                s.title = et.getText().toString().trim();
+                                                if (s.title.isEmpty()) s.title = "会话";
+                                                if (s == currentChatSession) {
+                                                    chatSessionTitleView.setText(s.title);
+                                                }
+                                                saveChatSessions();
+                                            })
+                                            .setNegativeButton("取消", null)
+                                            .show();
+                                } else {
+                                    new AlertDialog.Builder(this)
+                                            .setTitle("删除会话")
+                                            .setMessage("确定删除该会话及所有消息？")
+                                            .setPositiveButton("删除", (d4, w4) -> {
+                                                chatSessions.remove(s);
+                                                if (chatSessions.isEmpty()) {
+                                                    createNewChatSession();
+                                                } else if (s == currentChatSession) {
+                                                    currentChatSession = chatSessions.get(0);
+                                                    chatAdapter = new ChatAdapter(currentChatSession);
+                                                    chatListView.setAdapter(chatAdapter);
+                                                    chatSessionTitleView.setText(currentChatSession.title);
+                                                }
+                                                saveChatSessions();
+                                            })
+                                            .setNegativeButton("取消", null)
+                                            .show();
+                                }
+                            })
+                            .show();
                 })
+                .setNegativeButton("关闭", null)
                 .show();
     }
 
-    private void appendLlmText(final ArrayList<String> messages,
-            final ArrayAdapter<String> adapter, final ListView listView, final String text) {
+    private void appendChatMessage(String role, String text) {
+        appendMessageTo(currentChatSession, role, text);
+    }
+
+    private void appendMessageTo(ChatSession session, String role, String text) {
+        if (session == null) return;
+        ChatMessage m = new ChatMessage(role, text);
+        session.messages.add(m);
         mainHandler.post(() -> {
-            messages.add(text);
-            adapter.notifyDataSetChanged();
-            listView.setSelection(messages.size() - 1);
+            if (chatAdapter != null && currentChatSession == session) {
+                chatAdapter.notifyDataSetChanged();
+                scrollChatToBottom();
+            }
         });
+        saveChatSessions();
+    }
+
+    private void updateChatMessage(ChatMessage m, String newText) {
+        if (m == null) return;
+        m.text = newText;
+        mainHandler.post(() -> {
+            if (chatAdapter != null) chatAdapter.notifyDataSetChanged();
+            scrollChatToBottom();
+        });
+    }
+
+    private void scrollChatToBottom() {
+        if (chatListView != null && chatAdapter != null) {
+            chatListView.setSelection(chatAdapter.getCount() - 1);
+        }
     }
 
     private void showLlmSettingsDialog() {
@@ -1006,6 +1345,16 @@ public class MainActivity extends Activity {
     }
 
     private JSONObject callLlm(List<JSONObject> messages) throws Exception {
+        return callLlmInternal(messages, false, null);
+    }
+
+    private interface LlmStreamCallback {
+        void onDelta(String reasoningDelta, String contentDelta);
+        void onFinished(String fullReasoning, String fullContent);
+    }
+
+    private JSONObject callLlmInternal(List<JSONObject> messages, boolean stream,
+            LlmStreamCallback callback) throws Exception {
         String apiUrl = prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions");
         String apiKey = prefs.getString("llm_key", "");
         String model = prefs.getString("llm_model", "gpt-4o-mini");
@@ -1018,6 +1367,7 @@ public class MainActivity extends Activity {
         payload.put("messages", new JSONArray(messages));
         payload.put("temperature", temperature);
         payload.put("max_tokens", maxTokens);
+        payload.put("stream", stream);
 
         JSONObject extraBody = new JSONObject(prefs.getString("llm_body", "{}"));
         for (java.util.Iterator<String> it = extraBody.keys(); it.hasNext();) {
@@ -1031,6 +1381,7 @@ public class MainActivity extends Activity {
         conn.setReadTimeout(timeoutSec * 1000);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Accept", stream ? "text/event-stream" : "application/json");
         if (!apiKey.isEmpty()) {
             conn.setRequestProperty("Authorization", "Bearer " + apiKey);
         }
@@ -1047,11 +1398,53 @@ public class MainActivity extends Activity {
 
         int code = conn.getResponseCode();
         InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
-        String response = readStream(is);
         if (code < 200 || code >= 300) {
-            throw new Exception("HTTP " + code + ": " + response);
+            String err = readStream(is);
+            throw new Exception("HTTP " + code + ": " + err);
         }
-        return new JSONObject(response);
+
+        if (!stream) {
+            String response = readStream(is);
+            return new JSONObject(response);
+        }
+
+        // SSE streaming
+        BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+        String line;
+        StringBuilder fullContent = new StringBuilder();
+        StringBuilder fullReasoning = new StringBuilder();
+        while ((line = br.readLine()) != null) {
+            if (chatStopped.get()) {
+                break;
+            }
+            if (!line.startsWith("data:")) continue;
+            String data = line.substring(5).trim();
+            if (data.isEmpty() || "[DONE]".equals(data)) continue;
+            try {
+                JSONObject chunk = new JSONObject(data);
+                JSONArray choices = chunk.optJSONArray("choices");
+                if (choices == null || choices.length() == 0) continue;
+                JSONObject delta = choices.getJSONObject(0).optJSONObject("delta");
+                if (delta == null) continue;
+                String rc = delta.optString("reasoning_content", "");
+                String cc = delta.optString("content", "");
+                if (rc != null && !rc.isEmpty()) fullReasoning.append(rc);
+                if (cc != null && !cc.isEmpty()) fullContent.append(cc);
+                if (callback != null && (!rc.isEmpty() || !cc.isEmpty())) {
+                    callback.onDelta(rc, cc);
+                }
+            } catch (Exception ignored) {
+                // skip malformed SSE line
+            }
+        }
+        br.close();
+        if (callback != null) {
+            callback.onFinished(fullReasoning.toString(), fullContent.toString());
+        }
+        // return a synthetic response for compatibility
+        JSONObject fake = new JSONObject();
+        fake.put("streamed", true);
+        return fake;
     }
 
     private String readStream(InputStream is) throws Exception {
@@ -1141,67 +1534,125 @@ public class MainActivity extends Activity {
         return content.substring(start + 1, end).trim();
     }
 
-    private void runLlmAgent(String userMessage,
-            final ArrayList<String> messages, final ArrayAdapter<String> adapter,
-            final ListView listView, final CheckBox showThinking,
-            final AtomicBoolean paused, final AtomicBoolean running, final Button pauseBtn) {
+    private void generateSessionTitle(String firstUserMessage, final ChatSession session) {
         try {
-            String skill = readAsset("SKILL.md");
-            List<JSONObject> chat = new ArrayList<>();
-
+            List<JSONObject> msgs = new ArrayList<>();
             JSONObject sys = new JSONObject();
             sys.put("role", "system");
-            sys.put("content", skill + LLM_PROTOCOL);
-            chat.add(sys);
-
+            sys.put("content", TITLE_PROMPT);
+            msgs.add(sys);
             JSONObject user = new JSONObject();
             user.put("role", "user");
-            user.put("content", userMessage);
-            chat.add(user);
+            user.put("content", firstUserMessage);
+            msgs.add(user);
 
+            JSONObject resp = callLlm(msgs);
+            JSONArray choices = resp.optJSONArray("choices");
+            if (choices == null || choices.length() == 0) return;
+            String title = choices.getJSONObject(0).getJSONObject("message").optString("content", "").trim();
+            if (title.isEmpty()) return;
+            title = title.replaceAll("[\"“”'']", "").trim();
+            if (title.length() > 20) title = title.substring(0, 20);
+            final String finalTitle = title;
+            session.title = finalTitle;
+            mainHandler.post(() -> {
+                if (currentChatSession == session && chatSessionTitleView != null) {
+                    chatSessionTitleView.setText(finalTitle);
+                }
+            });
+            saveChatSessions();
+        } catch (Exception ignored) {
+            // title generation is best-effort
+        }
+    }
+
+    private List<JSONObject> buildLlmContext(ChatSession session, String skill) throws Exception {
+        List<JSONObject> chat = new ArrayList<>();
+        JSONObject sys = new JSONObject();
+        sys.put("role", "system");
+        sys.put("content", skill + LLM_PROTOCOL);
+        chat.add(sys);
+        for (ChatMessage m : session.messages) {
+            if ("user".equals(m.role)) {
+                chat.add(new JSONObject().put("role", "user").put("content", m.text));
+            } else if ("assistant".equals(m.role)) {
+                chat.add(new JSONObject().put("role", "assistant").put("content", m.text));
+            } else if ("tool".equals(m.role)) {
+                chat.add(new JSONObject().put("role", "user").put("content", "[工具结果]\n" + m.text));
+            }
+            // system / thinking are not sent to the model
+        }
+        return chat;
+    }
+
+    private void runLlmAgent(String userMessage) {
+        final ChatSession session = currentChatSession;
+        try {
+            String skill = readAsset("SKILL.md");
             int rounds = 0;
-            while (rounds < 20 && running.get()) {
-                if (paused.get()) {
-                    appendLlmText(messages, adapter, listView, "[系统] 已暂停，停止执行。");
+            boolean titleGenerated = false;
+
+            while (rounds < 20 && chatRunning.get() && !chatStopped.get()) {
+                List<JSONObject> chat = buildLlmContext(session, skill);
+
+                appendMessageTo(session, "system", "第 " + (rounds + 1) + " 轮：正在请求模型…");
+
+                // placeholders for this round
+                currentThinkingMessage = new ChatMessage("thinking", "");
+                currentAssistantMessage = new ChatMessage("assistant", "");
+                final ChatMessage thinkingMsg = currentThinkingMessage;
+                final ChatMessage assistantMsg = currentAssistantMessage;
+                session.messages.add(thinkingMsg);
+                session.messages.add(assistantMsg);
+                mainHandler.post(() -> {
+                    if (currentChatSession == session) {
+                        chatAdapter.notifyDataSetChanged();
+                        scrollChatToBottom();
+                    }
+                });
+
+                final StringBuilder reasoningBuf = new StringBuilder();
+                final StringBuilder contentBuf = new StringBuilder();
+                callLlmInternal(chat, true, new LlmStreamCallback() {
+                    @Override
+                    public void onDelta(String reasoningDelta, String contentDelta) {
+                        if (reasoningDelta != null && !reasoningDelta.isEmpty()) {
+                            reasoningBuf.append(reasoningDelta);
+                            updateChatMessage(thinkingMsg, reasoningBuf.toString());
+                        }
+                        if (contentDelta != null && !contentDelta.isEmpty()) {
+                            contentBuf.append(contentDelta);
+                            updateChatMessage(assistantMsg, contentBuf.toString());
+                        }
+                    }
+
+                    @Override
+                    public void onFinished(String fullReasoning, String fullContent) {
+                        // final update happens below
+                    }
+                });
+
+                if (chatStopped.get()) {
+                    appendMessageTo(session, "system", "[系统] 已停止。");
                     break;
                 }
 
-                appendLlmText(messages, adapter, listView,
-                        "第 " + (rounds + 1) + " 轮：正在调用模型…");
-                JSONObject resp = callLlm(chat);
-
-                JSONObject choice = resp.getJSONArray("choices").getJSONObject(0);
-                JSONObject message = choice.getJSONObject("message");
-                String content = message.optString("content", "");
-                String reasoning = message.optString("reasoning_content", "");
-                String finishReason = choice.optString("finish_reason", "stop");
-
+                String content = contentBuf.toString();
+                String reasoning = reasoningBuf.toString();
                 if (content.trim().isEmpty() && !reasoning.trim().isEmpty()) {
-                    if ("length".equals(finishReason)) {
-                        chat.add(new JSONObject().put("role", "user").put("content",
-                                "[系统提示] 你的输出被截断了，请直接输出 JSON 对象（不要输出思考过程）。"));
-                        rounds++;
-                        continue;
-                    }
-                    // Fallback for models that only put the answer in reasoning_content.
                     content = reasoning;
                 }
-
                 if (content.trim().isEmpty()) {
-                    chat.add(new JSONObject().put("role", "user").put("content",
-                            "[系统提示] 你没有输出任何内容，请直接输出 JSON 对象。"));
-                    rounds++;
-                    continue;
+                    updateChatMessage(assistantMsg, "[空输出]");
+                    appendMessageTo(session, "system", "[系统] 模型没有输出内容，请重试。");
+                    break;
                 }
+                updateChatMessage(assistantMsg, content);
 
-                chat.add(new JSONObject().put("role", "assistant").put("content", content));
-
-                if (showThinking.isChecked()) {
-                    String chain = content;
-                    if (!reasoning.trim().isEmpty()) {
-                        chain = "[推理] " + reasoning + "\n[回答] " + content;
-                    }
-                    appendLlmText(messages, adapter, listView, "[思考链 " + (rounds + 1) + "]\n" + chain);
+                // Auto title after first round
+                if (!titleGenerated && "新会话".equals(session.title)) {
+                    titleGenerated = true;
+                    new Thread(() -> generateSessionTitle(userMessage, session)).start();
                 }
 
                 JSONObject action = parseLlmAction(content);
@@ -1210,14 +1661,12 @@ public class MainActivity extends Activity {
                 String code = action.optString("code", "");
 
                 if (done || "done".equals(actionType)) {
-                    appendLlmText(messages, adapter, listView,
-                            "[系统] 模型认为任务已完成。");
+                    appendMessageTo(session, "system", "[系统] 模型认为任务已完成。");
                     break;
                 }
 
                 if (code.trim().isEmpty()) {
-                    chat.add(new JSONObject().put("role", "user").put("content",
-                            "[系统提示] 你没有给出可执行的 code，请重新输出 JSON 并包含 action 与 code。"));
+                    appendMessageTo(session, "tool", "模型未给出可执行代码，请其重新输出。");
                     rounds++;
                     continue;
                 }
@@ -1236,21 +1685,20 @@ public class MainActivity extends Activity {
                 String snapRaw = evalJsSyncOnUiThread("window.__ggbGetSnapshot()");
                 toolResult += "\n当前作图快照: " + unwrapJsString(snapRaw);
 
-                appendLlmText(messages, adapter, listView, "[工具结果]\n" + toolResult);
-                chat.add(new JSONObject().put("role", "user").put("content",
-                        "[工具结果]\n" + toolResult
-                        + "\n请继续操作；若已完成请输出 {\"action\":\"done\",\"done\":true}。"));
+                appendMessageTo(session, "tool", toolResult);
                 rounds++;
             }
 
             if (rounds >= 20) {
-                appendLlmText(messages, adapter, listView, "[系统] 已达到最大轮次（20），停止。");
+                appendMessageTo(session, "system", "[系统] 已达到最大轮次（20），停止。");
             }
         } catch (Exception e) {
-            appendLlmText(messages, adapter, listView, "[错误] " + e.getMessage());
+            appendMessageTo(session, "system", "[错误] " + e.getMessage());
         } finally {
-            running.set(false);
-            mainHandler.post(() -> pauseBtn.setText("暂停"));
+            chatRunning.set(false);
+            currentAssistantMessage = null;
+            currentThinkingMessage = null;
+            saveChatSessions();
         }
     }
 
