@@ -55,6 +55,22 @@
         clear: both;
         width: 100% !important;
     }
+
+    /*
+     * Anti-mis-touch: the drawing canvas must not be subject to browser
+     * touch scrolling/pinch gestures, so GeoGebra receives a clean
+     * pointerdown -> pointermove -> pointerup stream for drawing tools.
+     */
+    .GeoGebraFrame canvas,
+    .GeoGebraFrame .gwt-Canvas {
+        touch-action: none;
+    }
+
+    /* Keep the search view title ("打开") on one horizontal line. */
+    .GeoGebraFrame .headerView .headerCaption {
+        white-space: nowrap !important;
+        flex-shrink: 0;
+    }
 </style>
 </head>
 <body>
@@ -198,6 +214,151 @@
     }
 
     installUndoRedoDockPositioning();
+
+    // ---------- anti-mis-touch: toolbar horizontal touch scrolling ----------
+    // GeoGebra's mobile toolbar treats every touchend on a tool button as a
+    // click (it compares toolbar.getAbsoluteLeft() with itself). We add a real
+    // touch-drag threshold: a horizontal finger move scrolls toolBPanel and
+    // suppresses the tool activation; taps without movement still work.
+    function installToolbarTouchScroll() {
+        var startX = null;
+        var startY = null;
+        var startScrollLeft = 0;
+        var moved = false;
+        var activePanel = null;
+        var suppressClickUntil = 0;
+
+        function panelFor(target) {
+            if (!target || !target.closest) return null;
+            return target.closest(".toolbarPanel .toolBPanel");
+        }
+
+        document.addEventListener("touchstart", function (e) {
+            var panel = panelFor(e.target);
+            if (!panel) {
+                activePanel = null;
+                return;
+            }
+            var t = e.touches && e.touches[0];
+            if (!t) return;
+            startX = t.clientX;
+            startY = t.clientY;
+            startScrollLeft = panel.scrollLeft;
+            moved = false;
+            activePanel = panel;
+        }, { capture: true, passive: true });
+
+        document.addEventListener("touchmove", function (e) {
+            if (!activePanel) return;
+            var t = e.touches && e.touches[0];
+            if (!t) return;
+            var dx = t.clientX - startX;
+            var dy = t.clientY - startY;
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 6) {
+                moved = true;
+                activePanel.scrollLeft = startScrollLeft - dx;
+                if (e.cancelable) e.preventDefault();
+            } else if (Math.abs(dy) > 6) {
+                moved = true; // vertical swipe on the toolbar: never a click
+            }
+        }, { capture: true, passive: false });
+
+        document.addEventListener("touchend", function (e) {
+            if (activePanel && moved) {
+                if (e.cancelable) e.preventDefault();
+                e.stopPropagation();
+                suppressClickUntil = Date.now() + 500;
+            }
+            activePanel = null;
+            moved = false;
+        }, { capture: true, passive: false });
+
+        // Chrome fires a synthetic click after touchend; keep it away from the
+        // toolbar buttons when the touch ended in a drag.
+        document.addEventListener("click", function (e) {
+            if (Date.now() < suppressClickUntil && panelFor(e.target)) {
+                e.stopPropagation();
+                if (e.cancelable) e.preventDefault();
+            }
+        }, true);
+    }
+
+    installToolbarTouchScroll();
+
+    // ---------- search field: use the system IME instead of GeoGebra's keyboard ----------
+    document.addEventListener("focus", function (event) {
+        var target = event.target;
+        if (target && target.nodeType === 1 && target.closest
+                && target.closest(".searchBar")) {
+            // Stop GWT's own focus handler (which would open GeoGebra's
+            // on-screen keyboard). The input element is still focused natively,
+            // so Android shows the default IME.
+            event.stopPropagation();
+        }
+    }, true);
+
+    // ---------- keep the last executed search query, restore it when returning ----------
+    var lastSearchQuery = "";
+
+    function currentSearchInput() {
+        return document.querySelector(".searchBar input[type=text]");
+    }
+
+    document.addEventListener("keypress", function (e) {
+        if (e.key === "Enter" || e.keyCode === 13) {
+            var target = e.target;
+            if (target && target.closest && target.closest(".searchBar")) {
+                lastSearchQuery = target.value || "";
+            }
+        }
+    }, true);
+
+    document.addEventListener("click", function (e) {
+        var target = e.target;
+        if (target && target.closest && target.closest(".materialCard")) {
+            var input = currentSearchInput();
+            if (input) {
+                lastSearchQuery = input.value || lastSearchQuery;
+            }
+        }
+    }, true);
+
+    window.__ggbBack = function () {
+        var openView = document.querySelector(".openFileView");
+        if (openView) {
+            var back = openView.querySelector(".headerBackButton");
+            if (back) {
+                back.click();
+                return true;
+            }
+        }
+
+        // Reopen search (e.g. when a searched material is currently open).
+        var reopened = window.__ggbClickRightButton
+                && window.__ggbClickRightButton("search");
+        if (reopened && lastSearchQuery) {
+            var attempts = 0;
+            var timer = setInterval(function () {
+                var input = currentSearchInput();
+                if (input) {
+                    clearInterval(timer);
+                    input.value = lastSearchQuery;
+                    try {
+                        var ev = new KeyboardEvent("keypress", {
+                            key: "Enter", code: "Enter", keyCode: 13,
+                            which: 13, charCode: 13, bubbles: true
+                        });
+                        input.dispatchEvent(ev);
+                    } catch (err) {
+                        // best effort: the query is already filled in
+                    }
+                } else if (++attempts > 40) {
+                    clearInterval(timer);
+                }
+            }, 100);
+        }
+        return reopened;
+    };
 
     // ---------- helpers for Android ----------
     function b64ToUtf8(b64) {

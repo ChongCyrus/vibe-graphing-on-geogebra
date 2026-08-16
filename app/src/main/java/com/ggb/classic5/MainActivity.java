@@ -240,8 +240,9 @@ public class MainActivity extends Activity {
         // native top bar only keeps menu/search, which are triggered through
         // the hidden GeoGebra buttons.
         LinearLayout fixedBar = findViewById(R.id.fixed_bar);
-        String[] fixedLabels = {"菜单", "搜索"};
+        String[] fixedLabels = {"返回", "菜单", "搜索"};
         Runnable[] fixedActions = {
+                this::backToSearch,
                 this::openGgbMenu,
                 this::openGgbSearch
         };
@@ -280,6 +281,11 @@ public class MainActivity extends Activity {
             btn.setOnClickListener(v -> action.run());
             container.addView(btn);
         }
+    }
+
+    private void backToSearch() {
+        evalJsBool("(window.__ggbBack ? window.__ggbBack() : false)",
+                "返回不可用");
     }
 
     private void openGgbMenu() {
