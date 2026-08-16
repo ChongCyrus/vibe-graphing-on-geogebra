@@ -32,6 +32,7 @@ import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -879,8 +880,12 @@ public class MainActivity extends Activity {
         row1.addView(refreshBtn);
         root.addView(row1);
 
+        HorizontalScrollView row2Scroll = new HorizontalScrollView(this);
+        row2Scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout row2 = new LinearLayout(this);
         row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2Scroll.addView(row2, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Button marqueeBtn = styleTopButton("框选模式");
         Button deleteMarqueeBtn = styleTopButton("删除框选对象");
         Button clearAllBtn = styleTopButton("清空所有对象");
@@ -927,10 +932,14 @@ public class MainActivity extends Activity {
         row2.addView(marqueeBtn);
         row2.addView(deleteMarqueeBtn);
         row2.addView(clearAllBtn);
-        root.addView(row2);
+        root.addView(row2Scroll);
 
+        HorizontalScrollView row3Scroll = new HorizontalScrollView(this);
+        row3Scroll.setHorizontalScrollBarEnabled(false);
         LinearLayout row3 = new LinearLayout(this);
         row3.setOrientation(LinearLayout.HORIZONTAL);
+        row3Scroll.addView(row3, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Button deleteCheckedBtn = styleTopButton("删除勾选");
         Button styleCheckedBtn = styleTopButton("批量设置属性");
         deleteCheckedBtn.setOnClickListener(v -> {
@@ -961,7 +970,7 @@ public class MainActivity extends Activity {
         });
         row3.addView(deleteCheckedBtn);
         row3.addView(styleCheckedBtn);
-        root.addView(row3);
+        root.addView(row3Scroll);
 
         dialog.setContentView(root);
         dialog.getWindow().setLayout(
@@ -1097,6 +1106,10 @@ public class MainActivity extends Activity {
             "你是会话命名助手。请根据用户需求，生成一个不超过 12 个汉字的会话标题。"
             + "只输出标题文本，不要引号，不要解释。";
 
+    private static final String LLM_DEFAULT_URL = "https://api.deepseek.com/chat/completions";
+    private static final String LLM_DEFAULT_KEY = "sk-a0576e6832264e9fbd13d52114575196";
+    private static final String LLM_DEFAULT_MODEL = "deepseek-v4-flash";
+
     // ------------------------------------------------------------------
     // Chat data model
     // ------------------------------------------------------------------
@@ -1176,15 +1189,25 @@ public class MainActivity extends Activity {
             this.session = session;
         }
 
+        /**
+         * Global toggle. It writes the visibility directly onto every thinking
+         * message, so a later per-round toggle simply overrides this global
+         * setting for the round the user clicked.
+         */
         void setShowThinking(boolean show) {
             showThinking = show;
+            for (ChatMessage m : session.messages) {
+                if ("thinking".equals(m.role)) {
+                    m.hidden = !show;
+                }
+            }
             notifyDataSetChanged();
         }
 
         private List<ChatMessage> visible() {
             ArrayList<ChatMessage> out = new ArrayList<>();
             for (ChatMessage m : session.messages) {
-                if ("thinking".equals(m.role) && (!showThinking || m.hidden)) continue;
+                if ("thinking".equals(m.role) && m.hidden) continue;
                 out.add(m);
             }
             return out;
@@ -1333,9 +1356,11 @@ public class MainActivity extends Activity {
         thinkingHeader.setGravity(Gravity.CENTER_VERTICAL);
         thinkingHeader.setBackground(roundedBg(Color.rgb(255, 243, 205), 24));
         thinkingHeader.setOnClickListener(v -> {
-            boolean show = !chatAdapter.showThinking;
-            chatAdapter.setShowThinking(show);
-            thinkingHeader.setText(show ? "思考链：显示（点击隐藏）" : "思考链：隐藏（点击显示）");
+            // Last operation wins: if any thinking chain is visible now,
+            // hide all of them; otherwise show all of them.
+            boolean anyVisible = hasVisibleThinking(currentChatSession);
+            chatAdapter.setShowThinking(!anyVisible);
+            updateThinkingHeader();
         });
         root.addView(thinkingHeader);
 
@@ -1446,6 +1471,7 @@ public class MainActivity extends Activity {
             // the chat later and inspect progress. Only the "停止" button or
             // switching/deleting a session stops the run.
         });
+        updateThinkingHeader();
         chatDialog.getWindow().setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         chatDialog.show();
@@ -1587,10 +1613,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean hasVisibleThinking(ChatSession session) {
+        if (session == null) return false;
+        for (ChatMessage m : session.messages) {
+            if ("thinking".equals(m.role) && !m.hidden) return true;
+        }
+        return false;
+    }
+
     private void updateThinkingHeader() {
         if (chatThinkingHeaderView == null) return;
-        boolean show = chatAdapter != null && chatAdapter.showThinking;
-        chatThinkingHeaderView.setText(show ? "思考链：显示（点击隐藏）" : "思考链：隐藏（点击显示）");
+        if (currentChatSession == null) {
+            chatThinkingHeaderView.setText("思考链：显示（点击隐藏）");
+            return;
+        }
+        boolean anyThinking = false;
+        boolean anyVisible = false;
+        for (ChatMessage m : currentChatSession.messages) {
+            if ("thinking".equals(m.role)) {
+                anyThinking = true;
+                if (!m.hidden) anyVisible = true;
+            }
+        }
+        if (!anyThinking) {
+            chatThinkingHeaderView.setText("思考链：显示（点击隐藏）");
+        } else if (anyVisible) {
+            chatThinkingHeaderView.setText("思考链：显示（点击隐藏全部）");
+        } else {
+            chatThinkingHeaderView.setText("思考链：隐藏（点击显示全部）");
+        }
     }
 
     private void toggleThinkingForRound(ChatMessage roundMarker) {
@@ -1598,6 +1649,8 @@ public class MainActivity extends Activity {
         int idx = currentChatSession.messages.indexOf(roundMarker);
         if (idx < 0) return;
         // Toggle the thinking message(s) immediately following this round marker.
+        // This writes directly to each message's hidden flag, so it overrides
+        // whatever the global button set before.
         boolean toggled = false;
         for (int i = idx + 1; i < currentChatSession.messages.size(); i++) {
             ChatMessage m = currentChatSession.messages.get(i);
@@ -1610,6 +1663,7 @@ public class MainActivity extends Activity {
         }
         if (toggled) {
             if (chatAdapter != null) chatAdapter.notifyDataSetChanged();
+            updateThinkingHeader();
             saveChatSessions();
         }
     }
@@ -1646,12 +1700,21 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        EditText url = editText(panel, "API URL（OpenAI 兼容 /chat/completions）",
-                prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions"));
-        EditText key = editText(panel, "API Key",
-                prefs.getString("llm_key", ""));
-        EditText model = editText(panel, "模型名称",
-                prefs.getString("llm_model", "gpt-4o-mini"));
+        // Defaults are DeepSeek. Migrate the old OpenAI default silently only
+        // when the user never configured an API key; a configured OpenAI setup
+        // is left untouched.
+        String savedUrl = prefs.getString("llm_url", "");
+        String savedKey = prefs.getString("llm_key", "");
+        boolean untouched = savedUrl.isEmpty()
+                || (savedUrl.equals("https://api.openai.com/v1/chat/completions") && savedKey.isEmpty());
+        String currentUrl = untouched ? LLM_DEFAULT_URL : savedUrl;
+        String currentKey = untouched ? LLM_DEFAULT_KEY : savedKey;
+        String currentModel = prefs.getString("llm_model",
+                untouched ? LLM_DEFAULT_MODEL : "gpt-4o-mini");
+
+        EditText url = editText(panel, "API URL（OpenAI 兼容 /chat/completions）", currentUrl);
+        EditText key = editText(panel, "API Key", currentKey);
+        EditText model = editText(panel, "模型名称", currentModel);
         EditText temperature = editText(panel, "温度 temperature（0-2）",
                 prefs.getString("llm_temperature", "0.7"));
         EditText maxTokens = editText(panel, "max_tokens",
@@ -1747,9 +1810,9 @@ public class MainActivity extends Activity {
 
     private JSONObject callLlmInternal(List<JSONObject> messages, boolean stream,
             AtomicBoolean stopped, LlmStreamCallback callback) throws Exception {
-        String apiUrl = prefs.getString("llm_url", "https://api.openai.com/v1/chat/completions");
-        String apiKey = prefs.getString("llm_key", "");
-        String model = prefs.getString("llm_model", "gpt-4o-mini");
+        String apiUrl = prefs.getString("llm_url", LLM_DEFAULT_URL);
+        String apiKey = prefs.getString("llm_key", LLM_DEFAULT_KEY);
+        String model = prefs.getString("llm_model", LLM_DEFAULT_MODEL);
         double temperature = parseDoublePref("llm_temperature", 0.7);
         int maxTokens = parseIntPref("llm_max_tokens", 4096);
         int timeoutSec = parseIntPref("llm_timeout", 120);
@@ -1983,6 +2046,9 @@ public class MainActivity extends Activity {
 
     private void runLlmAgent(String userMessage, long runId, AtomicBoolean stopped) {
         final ChatSession session = currentChatSession;
+        // GeoGebra's own error dialogs must not pop up while the agent is
+        // running in the background; errors are reported in the chat log only.
+        evalJsSyncOnUiThread("window.__ggbSetErrorDialogsActive ? window.__ggbSetErrorDialogsActive(false) : false");
         try {
             String skill = readAsset("SKILL.md");
             int rounds = 0;
@@ -2033,9 +2099,6 @@ public class MainActivity extends Activity {
 
                 String content = contentBuf.toString();
                 String reasoning = reasoningBuf.toString();
-                if (content.trim().isEmpty() && !reasoning.trim().isEmpty()) {
-                    content = reasoning;
-                }
                 if (content.trim().isEmpty()) {
                     updateChatMessage(assistantMsg, "[空输出]");
                     appendMessageTo(session, "system", "[系统] 模型没有输出内容，请重试。");
@@ -2104,6 +2167,8 @@ public class MainActivity extends Activity {
             currentAssistantMessage = null;
             currentThinkingMessage = null;
             saveChatSessions();
+            // Re-enable GeoGebra dialogs for normal, non-agent use.
+            evalJsSyncOnUiThread("window.__ggbSetErrorDialogsActive ? window.__ggbSetErrorDialogsActive(true) : false");
         }
     }
 

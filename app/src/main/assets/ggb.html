@@ -834,6 +834,18 @@
         }
     };
 
+    // Silence GeoGebra's native error dialogs while the LLM agent executes
+    // scripts, so failed commands only appear in the chat tool log.
+    window.__ggbSetErrorDialogsActive = function (flag) {
+        if (!api || typeof api.setErrorDialogsActive !== "function") return false;
+        try {
+            api.setErrorDialogsActive(!!flag);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    };
+
     // Dispatch a native Delete key so GeoGebra deletes whatever is currently
     // selected in the view (tap-selected or marquee-selected objects).
     window.__ggbDeleteSelected = function () {

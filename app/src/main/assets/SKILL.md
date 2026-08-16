@@ -43,6 +43,7 @@ Android 侧通过 `webView.evaluateJavascript(...)` 调用 `window.__ggb*` 函�
 | `window.__ggbListObjects()` | 无 | JSON 字符串 | 对象数组 `[{name,type}]`（用于对象管理/多选） |
 | `window.__ggbClearAll()` | 无 | boolean | 删除所有对象（保留坐标轴/网格/视图设置） |
 | `window.__ggbSetMode(mode)` | 模式编号 | boolean | 切换工具模式（如 77=框选） |
+| `window.__ggbSetErrorDialogsActive(flag)` | boolean | boolean | 开启/关闭 GeoGebra 原生报错弹窗（LLM 执行期间关闭） |
 | `window.__ggbDeleteSelected()` | 无 | boolean | 删除当前绘图区中所有被选中对象（点选/框选） |
 | `window.__ggbGetTikz(cbId, settingsJson)` | callback id + TikZ 设置 JSON | 回调 | 当前绘图转 TikZ 代码块 |
 | `window.__ggbBack()` | 无 | boolean | 应用内返回：搜索页关闭 / 材料页返回搜索 / 主页面无操作 |
