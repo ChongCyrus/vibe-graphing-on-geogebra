@@ -78,6 +78,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | TikZ | 将当前绘图转换为 TikZ 代码块（弹出预览，可复制/保存） |
 | LaTeX | 输入常见 LaTeX 公式，转换为 GeoGebra 命令并执行 |
 | 脚本 | 执行多行 GGB 命令脚本或页面内 JavaScript |
+| LLM | 打开大模型操作台：自然语言驱动 GeoGebra，可配置 API/Key/模型/请求头 |
 | 设置 | 界面语言、TikZ 输出模式/单位/缩放/小数位/箭头等 |
 
 代数输入框支持使用手机系统输入法输入；同时可用 LaTeX 按钮输入公式。

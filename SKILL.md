@@ -183,7 +183,29 @@ LLM 生成脚本时，应保证每行可独立被 `ggbApi.evalCommand` 执行。
 
 ---
 
-## 9. 已知限制
+## 9. LLM 智能体协议（应用内“LLM”按钮）
+
+应用内置 LLM 操作台，把本文件作为系统提示词（system prompt）发送给大模型。
+模型每轮应只输出一个 JSON 对象：
+
+```json
+{
+  "thinking": "简短思考过程",
+  "action": "ggb | js | done",
+  "code": "GGB 命令（每行一条）或 JavaScript 代码",
+  "done": false
+}
+```
+
+- `ggb`：执行 GGB 命令脚本，返回逐行执行日志
+- `js`：在 GeoGebra 页面上下文执行 JavaScript，返回脚本结果
+- `done`：任务完成，停止循环
+
+工具结果会自动回传给模型，包括：每条命令是否成功、错误信息、当前作图快照
+（对象数量、对象名、对象类型、当前模式）。用户可在聊天框中选择“显示思考链”查看
+每轮模型的完整输出。
+
+## 10. 已知限制
 
 - 文件保存依赖 Android Storage Access Framework（ACTION_CREATE_DOCUMENT / ACTION_OPEN_DOCUMENT）。
 - JavaScript 脚本运行在 WebView 页面上下文，不能访问 Android 文件系统。
