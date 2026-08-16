@@ -1104,8 +1104,7 @@ public class MainActivity extends Activity {
             + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true，code 可为空字符串。\n"
             + "4. 每轮只能输出一个 JSON 对象；不要输出自然语言、不要输出 Markdown 代码块（不要用 ```json 或 ```ggb 包裹）、不要输出注释。\n"
             + "5. 如果上一条工具结果提示“格式错误”，本轮必须只输出一个 JSON 对象，禁止任何解释性文字。\n"
-            + "6. thinking 字段只用于记录思考，执行器不会执行 thinking；真正要执行的命令必须放在 code 中。\n"
-            + "7. 你的内部推理/思考必须极其简短（不超过 80 个字），把绝大多数 token 留给 content 中的 JSON 对象，并保证输出以 JSON 对象结束。\n";
+            + "6. thinking 字段只用于记录思考，执行器不会执行 thinking；真正要执行的命令必须放在 code 中。\n";
 
     private static final String TITLE_PROMPT =
             "你是会话命名助手。请根据用户需求，生成一个不超过 12 个汉字的会话标题。"
@@ -1732,6 +1731,8 @@ public class MainActivity extends Activity {
                 prefs.getString("llm_max_tokens", LLM_DEFAULT_MAX_TOKENS));
         EditText timeoutSec = editText(panel, "超时（秒）",
                 prefs.getString("llm_timeout", "120"));
+        EditText thinkingLimit = editText(panel, "思考长度限制（字数；0=不约束，不追加相关提示）",
+                prefs.getString("llm_thinking_limit", "0"));
         EditText headers = editText(panel, "额外请求头 JSON（例如 {\"X-Key\":\"v\"}）",
                 prefs.getString("llm_headers", "{}"));
         EditText body = editText(panel, "额外请求体 JSON（会合并到请求体）",
@@ -1748,6 +1749,7 @@ public class MainActivity extends Activity {
                             .putString("llm_temperature", temperature.getText().toString().trim())
                             .putString("llm_max_tokens", maxTokens.getText().toString().trim())
                             .putString("llm_timeout", timeoutSec.getText().toString().trim())
+                            .putString("llm_thinking_limit", thinkingLimit.getText().toString().trim())
                             .putString("llm_headers", headers.getText().toString().trim())
                             .putString("llm_body", body.getText().toString().trim())
                             .apply();
@@ -2067,11 +2069,26 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The thinking-brevity constraint is user-configurable. A value &lt;= 0
+     * means no such constraint is added to the system prompt.
+     */
+    private String llmSystemPrompt() {
+        int limit = parseIntPref("llm_thinking_limit", 0);
+        if (limit <= 0) {
+            return LLM_PROTOCOL;
+        }
+        return LLM_PROTOCOL
+                + "\n7. 你的内部推理/思考必须极其简短（不超过 " + limit
+                + " 个字），把绝大多数 token 留给 content 中的 JSON 对象，"
+                + "并保证输出以 JSON 对象结束。\n";
+    }
+
     private List<JSONObject> buildLlmContext(ChatSession session, String skill) throws Exception {
         List<JSONObject> chat = new ArrayList<>();
         JSONObject sys = new JSONObject();
         sys.put("role", "system");
-        sys.put("content", skill + LLM_PROTOCOL);
+        sys.put("content", skill + llmSystemPrompt());
         chat.add(sys);
         for (ChatMessage m : session.messages) {
             if ("user".equals(m.role)) {
