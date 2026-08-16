@@ -1093,14 +1093,17 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------
 
     private static final String LLM_PROTOCOL =
-            "\n\n你是一个 GeoGebra 操作智能体。你必须只输出一个 JSON 对象，格式如下：\n"
+            "\n\n你是一个 GeoGebra 操作智能体。你必须只输出一个 JSON 对象，不要输出任何其他文字。\n"
+            + "输出格式：\n"
             + "{\"thinking\":\"你的简短思考过程\",\"action\":\"ggb|js|done\","
             + "\"code\":\"要执行的 GGB 命令（每行一条）或 JavaScript 代码\",\"done\":false}\n"
             + "规则：\n"
             + "1. 需要操作 GeoGebra 时，action 用 \"ggb\"，code 中每行一条 GeoGebra 命令。\n"
             + "2. 需要页面内 JavaScript 时，action 用 \"js\"，code 是 JS 代码（可调用 window.ggbApi）。\n"
-            + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true。\n"
-            + "4. 每轮只能输出一个 JSON 对象，不要输出多余文本。\n";
+            + "3. 已经完成用户需求或已经无法继续时，action 用 \"done\" 且 done 为 true，code 可为空字符串。\n"
+            + "4. 每轮只能输出一个 JSON 对象；不要输出自然语言、不要输出 Markdown 代码块（不要用 ```json 或 ```ggb 包裹）、不要输出注释。\n"
+            + "5. 如果上一条工具结果提示“格式错误”，本轮必须只输出一个 JSON 对象，禁止任何解释性文字。\n"
+            + "6. thinking 字段只用于记录思考，执行器不会执行 thinking；真正要执行的命令必须放在 code 中。\n";
 
     private static final String TITLE_PROMPT =
             "你是会话命名助手。请根据用户需求，生成一个不超过 12 个汉字的会话标题。"
@@ -1935,18 +1938,34 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Parse the model reply into an action. Returns {@code null} when the
+     * reply is neither a JSON object nor a ggb/js fenced code block; the
+     * caller then asks the model to retry instead of executing arbitrary
+     * prose as GeoGebra commands.
+     */
     private JSONObject parseLlmAction(String content) {
-        int s = content.indexOf('{');
-        int e = content.lastIndexOf('}');
+        if (content == null) return null;
+        String trimmed = content.trim();
+        if (trimmed.isEmpty()) return null;
+
+        // Preferred: a single JSON object anywhere in the reply. Require at
+        // least one protocol field so a random brace in prose is not executed.
+        int s = trimmed.indexOf('{');
+        int e = trimmed.lastIndexOf('}');
         if (s >= 0 && e > s) {
             try {
-                return new JSONObject(content.substring(s, e + 1));
+                JSONObject o = new JSONObject(trimmed.substring(s, e + 1));
+                if (o.has("action") || o.has("code") || o.has("done")) {
+                    return o;
+                }
             } catch (Exception ignored) {
                 // fall through to code-fence parsing
             }
         }
 
-        String ggb = extractFenced(content, "ggb");
+        // Accepted fallback: a fenced ggb/js code block.
+        String ggb = extractFenced(trimmed, "ggb");
         if (!ggb.isEmpty()) {
             try {
                 JSONObject o = new JSONObject();
@@ -1958,8 +1977,8 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
         }
 
-        String js = extractFenced(content, "js");
-        if (js.isEmpty()) js = extractFenced(content, "javascript");
+        String js = extractFenced(trimmed, "js");
+        if (js.isEmpty()) js = extractFenced(trimmed, "javascript");
         if (!js.isEmpty()) {
             try {
                 JSONObject o = new JSONObject();
@@ -1971,16 +1990,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
         }
 
-        try {
-            JSONObject o = new JSONObject();
-            o.put("thinking", "");
-            o.put("action", "ggb");
-            o.put("code", content.trim());
-            o.put("done", false);
-            return o;
-        } catch (Exception ignored) {
-            return new JSONObject();
-        }
+        return null;
     }
 
     private String extractFenced(String content, String lang) {
@@ -2057,6 +2067,7 @@ public class MainActivity extends Activity {
         try {
             String skill = readAsset("SKILL.md");
             int rounds = 0;
+            int formatRetries = 0;
             boolean titleGenerated = false;
 
             while (rounds < 20 && runId == chatRunId && !chatStopped.get() && !stopped.get()) {
@@ -2109,31 +2120,65 @@ public class MainActivity extends Activity {
                     break;
                 }
 
-                String content = contentBuf.toString();
-                String reasoning = reasoningBuf.toString();
-                if (content.trim().isEmpty()) {
-                    updateChatMessage(assistantMsg, "[空输出]");
-                    appendMessageTo(session, "system", "[系统] 模型没有输出内容，请重试。");
-                    break;
-                }
+                String content = contentBuf.toString().trim();
+                String reasoning = reasoningBuf.toString().trim();
 
                 // Remove an empty thinking placeholder (models without reasoning).
-                if (reasoning.trim().isEmpty() && session.messages.remove(thinkingMsg)) {
+                if (reasoning.isEmpty() && session.messages.remove(thinkingMsg)) {
                     if (currentChatSession == session) {
                         scheduleChatRefresh();
                     }
                 } else {
                     updateChatMessage(thinkingMsg, reasoning);
                 }
-                updateChatMessage(assistantMsg, content);
 
-                // Auto title after first round
+                JSONObject action = parseLlmAction(content);
+                if (action == null && !reasoning.isEmpty()) {
+                    // Some reasoning models put everything in reasoning_content.
+                    // parseLlmAction is strict, so prose is never executed; a
+                    // valid JSON/fenced block in reasoning is still usable.
+                    JSONObject fromReasoning = parseLlmAction(reasoning);
+                    if (fromReasoning != null) {
+                        action = fromReasoning;
+                        appendMessageTo(session, "tool",
+                                "[格式提醒] content 为空，已从 reasoning_content 解析出动作；"
+                                        + "请后续轮次严格在 content 中只输出一个 JSON 对象。");
+                    }
+                }
+
+                if (action == null) {
+                    formatRetries++;
+                    String why = content.isEmpty()
+                            ? "模型未输出任何 content 内容。"
+                            : "模型输出既不是 JSON 对象，也没有 ggb/js 代码块。";
+                    updateChatMessage(assistantMsg, content.isEmpty() ? "[空输出]" : content);
+                    appendMessageTo(session, "tool",
+                            "[格式错误] " + why + " 请严格只输出一个 JSON 对象："
+                                    + "{\"thinking\":\"简短思考\",\"action\":\"ggb|js|done\","
+                                    + "\"code\":\"...\",\"done\":false}。"
+                                    + "不要输出自然语言，不要使用 Markdown 代码块包裹 JSON。");
+                    if (formatRetries >= 3) {
+                        appendMessageTo(session, "system",
+                                "[系统] 模型连续 " + formatRetries + " 次未按 JSON 协议输出，已停止。请重新描述需求。");
+                        break;
+                    }
+                    rounds++;
+                    continue;
+                }
+                formatRetries = 0;
+
+                if (content.isEmpty()) {
+                    updateChatMessage(assistantMsg, "[空输出]（已从 reasoning 解析动作）");
+                } else {
+                    updateChatMessage(assistantMsg, content);
+                }
+
+                // Auto title after first valid round
                 if (!titleGenerated && "新会话".equals(session.title)) {
                     titleGenerated = true;
                     new Thread(() -> generateSessionTitle(userMessage, session)).start();
                 }
 
-                JSONObject action = parseLlmAction(content);
                 boolean done = action.optBoolean("done", false);
                 String actionType = jsonString(action, "action");
                 if (actionType.isEmpty()) actionType = "done";
