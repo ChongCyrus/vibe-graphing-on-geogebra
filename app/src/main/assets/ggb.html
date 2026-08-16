@@ -756,29 +756,90 @@
     };
 
     // Snapshot of the current construction for the LLM feedback loop.
+    // Includes ALL objects with their full visible state (colour, filling,
+    // line/point style, label, layer, fixed/trace flags, definition, value,
+    // coordinates) plus the graphics view state (axes/grid/background/range).
     window.__ggbGetSnapshot = function () {
-        var snap = { objectNumber: 0, objects: [], mode: -1, error: "" };
+        var snap = { objectNumber: 0, objects: [], view: {}, mode: -1, error: "" };
         if (!api) {
             snap.error = "GeoGebra API is not ready";
             return JSON.stringify(snap);
         }
-        try { snap.mode = (typeof api.getMode === "function") ? api.getMode() : -1; } catch (e) {}
+
+        function safeGet(fn) {
+            try {
+                var v = fn();
+                return (v === undefined) ? null : v;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        try { snap.mode = safeGet(function () { return api.getMode(); }); } catch (e) {}
+
         try {
             if (typeof api.getObjectNumber === "function") {
                 snap.objectNumber = api.getObjectNumber();
             }
             if (typeof api.getAllObjectNames === "function") {
                 var names = api.getAllObjectNames();
-                for (var i = 0; i < names.length && i < 200; i++) {
+                snap.truncated = false;
+                for (var i = 0; i < names.length; i++) {
                     var name = names[i];
-                    var type = "";
-                    try { type = (typeof api.getObjectType === "function") ? api.getObjectType(name) : ""; } catch (e2) {}
-                    snap.objects.push({ name: name, type: type });
+                    var o = { name: name };
+                    o.type = safeGet(function () { return api.getObjectType(name); });
+                    o.defined = safeGet(function () { return api.isDefined(name); });
+                    o.independent = safeGet(function () { return api.isIndependent(name); });
+                    o.visible = safeGet(function () { return api.getVisible(name); });
+                    o.labelVisible = safeGet(function () { return api.getLabelVisible(name); });
+                    o.fixed = safeGet(function () { return api.isFixed(name); });
+                    o.trace = safeGet(function () { return api.isTracing(name); });
+                    o.layer = safeGet(function () { return api.getLayer(name); });
+                    o.color = safeGet(function () { return api.getColor(name); });
+                    o.filling = safeGet(function () { return api.getFilling(name); });
+                    o.lineThickness = safeGet(function () { return api.getLineThickness(name); });
+                    o.lineStyle = safeGet(function () { return api.getLineStyle(name); });
+                    o.pointSize = safeGet(function () { return api.getPointSize(name); });
+                    o.pointStyle = safeGet(function () { return api.getPointStyle(name); });
+                    o.value = safeGet(function () { return api.getValueString(name); });
+                    o.definition = safeGet(function () { return api.getDefinitionString(name); });
+                    o.command = safeGet(function () { return api.getCommandString(name); });
+                    o.caption = safeGet(function () { return api.getCaption(name); });
+                    if (o.type === "point" || o.type === "vector") {
+                        o.x = safeGet(function () { return api.getXcoord(name); });
+                        o.y = safeGet(function () { return api.getYcoord(name); });
+                    }
+                    snap.objects.push(o);
                 }
             }
         } catch (e) {
-            snap.error = e.message || String(e);
+            snap.error = (snap.error ? snap.error + "; " : "") + (e.message || String(e));
         }
+
+        try {
+            if (typeof api.getViewProperties === "function") {
+                var vpRaw = api.getViewProperties(1);
+                try {
+                    snap.view.properties = JSON.parse(vpRaw);
+                } catch (e) {
+                    snap.view.properties = vpRaw;
+                }
+            }
+            if (typeof api.getGraphicsOptions === "function") {
+                var go = api.getGraphicsOptions(1);
+                try {
+                    snap.view.graphics = JSON.parse(JSON.stringify(go));
+                } catch (e) {
+                    snap.view.graphics = null;
+                }
+            }
+            if (typeof api.getGridVisible === "function") {
+                snap.view.gridVisible = api.getGridVisible(1);
+            }
+        } catch (e) {
+            // view properties are best-effort
+        }
+
         return JSON.stringify(snap);
     };
 

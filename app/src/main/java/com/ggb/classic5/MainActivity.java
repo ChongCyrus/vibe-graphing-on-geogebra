@@ -2061,6 +2061,13 @@ public class MainActivity extends Activity {
 
             while (rounds < 20 && runId == chatRunId && !chatStopped.get() && !stopped.get()) {
                 List<JSONObject> chat = buildLlmContext(session, skill);
+                if (rounds == 0) {
+                    // Let the model see the complete starting state, not only
+                    // the state after its first action.
+                    String snapRaw = evalJsSyncOnUiThread("window.__ggbGetSnapshot ? window.__ggbGetSnapshot() : '{}'");
+                    chat.add(new JSONObject().put("role", "system")
+                            .put("content", "[初始作图状态]\n" + unwrapJsString(snapRaw)));
+                }
 
                 appendMessageTo(session, "system", "第 " + (rounds + 1) + " 轮：正在请求模型…（点击切换本轮思考链）");
 

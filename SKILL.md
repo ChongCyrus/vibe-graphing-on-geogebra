@@ -39,7 +39,7 @@ Android 侧通过 `webView.evaluateJavascript(...)` 调用 `window.__ggb*` 函�
 | `window.__ggbRunGgbScript(script)` | 多行 GeoGebra 命令（每行一条） | boolean | 逐行执行 GGB 脚本；至少执行一条返回 true |
 | `window.__ggbRunGgbScriptWithLog(script)` | 多行 GeoGebra 命令 | JSON 字符串 | 逐行执行并返回每行 `{line,ok,error}` 日志 |
 | `window.__ggbRunJsScript(script)` | JavaScript 代码 | 字符串 | 在页面上下文执行 JS 并返回结果 |
-| `window.__ggbGetSnapshot()` | 无 | JSON 字符串 | 当前作图快照：对象数量/名称/类型/当前模式 |
+| `window.__ggbGetSnapshot()` | 无 | JSON 字符串 | 完整作图快照：**全部对象**的可见性/颜色/填充/线型线宽/点型点大小/标签/图层/固定/跟踪/定义/值/坐标，以及视图状态（坐标范围、坐标轴、网格、背景色等） |
 | `window.__ggbListObjects()` | 无 | JSON 字符串 | 对象数组 `[{name,type}]`（用于对象管理/多选） |
 | `window.__ggbClearAll()` | 无 | boolean | 删除所有对象（保留坐标轴/网格/视图设置） |
 | `window.__ggbSetMode(mode)` | 模式编号 | boolean | 切换工具模式（如 77=框选） |
@@ -179,6 +179,41 @@ ggbApi.setLabelVisible("A", true);
 
 > 注意：`SetFilling` / `ggbApi.setFilling` 的值域是 **0..1**（不是 0..100）。
 > 颜色命令 `SetColor` 对大多数对象都有效；`SetFilling` 只对 4.5.1 中列出的可填充对象有可见效果。
+
+---
+
+## 4.6 视图（坐标轴/网格/背景）读取与操作
+
+`__ggbGetSnapshot` 的 `view` 字段会返回当前绘图区状态，模型**每次执行后都会收到**这份信息（首轮还会收到初始状态）。它包含：
+- `view.properties`：`{invXscale, invYscale, xMin, yMin, width, height, left, top}`（据此可推算可视范围）
+- `view.graphics`：`{grid, gridIsBold, gridType, bgColor, gridColor, axesColor, rulerType, gridDistance, axes:{x:{visible, positiveAxis, showNumbers, tickStyle, label, unitLabel}, y:{...}}}`
+- `view.gridVisible`：网格是否可见
+
+模型可用的 GGB 命令：
+
+```ggb
+ShowAxes(true)              # 显示/隐藏坐标轴（ShowAxes(false) 隐藏）
+ShowGrid(false)             # 显示/隐藏网格
+SetBackgroundColor("red")   # 设置背景色（颜色名或 "#RRGGBB"）
+SetBackgroundColor(1,1,1)   # 设置背景色（RGB 分量取值范围 0-1，1=255）
+SetAxesRatio(1, 1)          # 设置 x/y 轴比例
+ZoomIn(2)                   # 放大
+ZoomOut(2)                  # 缩小
+Pan(20, 30)                 # 平移（像素）
+CenterView(A)               # 以点 A 为中心
+```
+
+可用的 JS API：
+
+```js
+ggbApi.setCoordSystem(xmin, xmax, ymin, ymax); // 直接设置绘图区范围
+ggbApi.setAxesVisible(true, false);             // x 轴显示、y 轴隐藏
+ggbApi.setGridVisible(false);                   // 隐藏网格
+ggbApi.getViewProperties(1);                    // 视图范围/比例
+ggbApi.getGraphicsOptions(1);                   // 网格/背景/坐标轴颜色等
+```
+
+> 注意：`getGraphicsOptions(1)` 与 `getViewProperties(1)` 是 JS API；GGB 脚本路径用 `ShowAxes` / `ShowGrid` / `SetBackgroundColor` / `SetAxesRatio`。
 
 ---
 
