@@ -66,6 +66,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 | 按钮 | 功能 |
 |------|------|
+| 菜单 | 打开 GeoGebra 菜单（三个横线） |
+| 搜索 | 打开 GeoGebra 搜索 |
 | 新建 | 新建作图（`ggbApplet.reset()`） |
 | 打开 | 从系统文件选择器打开 `.ggb` 文件 |
 | 保存 | 将当前作图保存为 `.ggb` |
@@ -73,6 +75,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | PNG  | 将当前绘图导出为 PNG 文件 |
 | TikZ | 将当前绘图转换为 TikZ 代码块（弹出预览，可复制/保存） |
 | 设置 | 界面语言、TikZ 输出模式/单位/缩放/小数位/箭头等 |
+
+撤销/重做保持 GeoGebra 原始箭头图标，固定在右下角缩放按钮组（home 按钮）上方。
 
 TikZ 默认输出为 TikZJax / Obsidian 代码块格式：
 
